@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#b7e4f6" />
+<title>flyBy</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: #071018;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+  canvas {
+    display: block;
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    touch-action: none;
+    background: #b7e4f6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const frames = ["art/sprites/bird-01-up.png","art/sprites/bird-02-mid.png","art/sprites/bird-03-down.png","art/sprites/bird-04-mid.png"];
+const imgs = frames.map(src => { const i = new Image(); i.src = src; return i; });
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+let W = 0, H = 0, dpr = 1;
+function phoneBox() {
+  const vv = window.visualViewport;
+  const vw = vv ? vv.width : window.innerWidth;
+  const vh = vv ? vv.height : window.innerHeight;
+  const portraitPhone = vw <= 520 || (vw / vh) < 0.72;
+  if (portraitPhone) return { w: vw, h: vh };
+  const h = vh;
+  const w = Math.min(vw * 0.92, h * (9 / 19.5));
+  return { w, h };
+}
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const box = phoneBox();
+  W = box.w;
+  H = box.h;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (!started) {
+    bird.x = W * 0.5;
+    bird.y = H * 0.72;
+  }
+  layoutClouds();
+}
+window.addEventListener("resize", resize);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", resize);
+}
+document.addEventListener("gesturestart", e => e.preventDefault());
+document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+
+const bird = { x: 0, y: 0, r: 26, frame: 0, flap: 0 };
+let obstacles = [];
+let clouds = [];
+let spawn = 0;
+let dist = 0;
+let skyScroll = 0;
+let alive = true;
+let started = false;
+let best = Number(localStorage.getItem("flyby-best") || 0);
+let pointer = false;
+let bits = [];
+let cheer = null;
+let nextMark = 0;
+const marks = [5000, 10000, 25000, 50000, 100000];
+
+function layoutClouds() {
+  if (!W) return;
+  if (clouds.length) return;
+  const n = 7;
+  for (let i = 0; i < n; i++) {
+    clouds.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      s: 46 + Math.random() * 54,
+      puff: 2 + Math.floor(Math.random() * 2)
+    });
+  }
+}
+
+function reset() {
+  bird.x = W * 0.5;
+  bird.y = H * 0.72;
+  bird.frame = 0;
+  bird.flap = 0;
+  obstacles = [];
+  spawn = 420;
+  dist = 0;
+  alive = true;
+  started = true;
+  bits = [];
+  cheer = null;
+  nextMark = 0;
+}
+
+function setX(clientX) {
+  const rect = canvas.getBoundingClientRect();
+  bird.x = Math.max(40, Math.min(W - 40, clientX - rect.left));
+}
+
+canvas.addEventListener("pointerdown", e => {
+  pointer = true;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+  if (!started || !alive) reset();
+  setX(e.clientX);
+});
+canvas.addEventListener("pointermove", e => { if (pointer && alive && started) setX(e.clientX); });
+canvas.addEventListener("pointerup", () => { pointer = false; });
+canvas.addEventListener("pointercancel", () => { pointer = false; });
+
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#d9f3ff");
+  g.addColorStop(0.45, "#bfe6f8");
+  g.addColorStop(1, "#9ed4ef");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  skyScroll += started && alive ? 1.15 : 0.35;
+  for (const c of clouds) {
+    let y = (c.y + skyScroll) % (H + 160) - 80;
+    drawCloud(c.x, y, c.s);
+  }
+}
+
+function drawCloud(x, y, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.strokeStyle = "#2a2a2a";
+  ctx.lineWidth = 2.2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.55, s * 0.16);
+  ctx.bezierCurveTo(-s * 0.78, s * 0.16, -s * 0.7, -s * 0.12, -s * 0.38, -s * 0.1);
+  ctx.bezierCurveTo(-s * 0.36, -s * 0.4, -s * 0.02, -s * 0.42, s * 0.04, -s * 0.14);
+  ctx.bezierCurveTo(s * 0.1, -s * 0.38, s * 0.46, -s * 0.3, s * 0.38, -s * 0.06);
+  ctx.bezierCurveTo(s * 0.7, -s * 0.04, s * 0.68, s * 0.2, s * 0.38, s * 0.18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBird() {
+  const img = imgs[bird.frame];
+  const s = 96;
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, bird.x - s / 2, bird.y - s / 2, s, s);
+  } else {
+    ctx.strokeStyle = "#121212";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(bird.x - 30, bird.y + 10);
+    ctx.lineTo(bird.x - 8, bird.y - 4);
+    ctx.lineTo(bird.x - 2, bird.y + 4);
+    ctx.lineTo(bird.x + 16, bird.y - 8);
+    ctx.lineTo(bird.x + 26, bird.y + 6);
+    ctx.stroke();
+  }
+}
+
+function drawPlane(o) {
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.strokeStyle = "#1a1a1a";
+  ctx.lineWidth = 2.4;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.globalAlpha = 0.4;
+  ctx.beginPath();
+  ctx.moveTo(0, -34);
+  ctx.lineTo(0, -18);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 18);
+  ctx.lineTo(-20, -14);
+  ctx.lineTo(0, -4);
+  ctx.lineTo(20, -14);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, 18);
+  ctx.lineTo(0, -12);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawOtherBird(o) {
+  const img = imgs[o.frame % 4];
+  const s = o.s;
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.rotate(Math.PI);
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, -s / 2, -s / 2, s, s);
+  } else {
+    ctx.strokeStyle = "#121212";
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = "round";
+    const lift = [10, 2, -6, 2][o.frame % 4];
+    ctx.beginPath();
+    ctx.moveTo(-28, 8);
+    ctx.quadraticCurveTo(-12, -lift, 0, 2);
+    ctx.quadraticCurveTo(14, -lift - 4, 28, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function halfW(o) {
+  if (o.kind === "plane") return 22;
+  return (o.s || 78) * 0.36;
+}
+function hasLane(extra) {
+  const band = obstacles.filter(o => o.y < 260);
+  if (extra) band.push(extra);
+  const spans = band.map(o => [o.x - halfW(o) - 6, o.x + halfW(o) + 6]).sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const s of spans) {
+    if (!merged.length || s[0] > merged[merged.length - 1][1]) merged.push(s.slice());
+    else merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], s[1]);
+  }
+  const need = 118;
+  let left = 16;
+  for (const s of merged) {
+    if (s[0] - left >= need) return true;
+    left = Math.max(left, s[1]);
+  }
+  return (W - 16) - left >= need;
+}
+function spawnObs() {
+  const heat = Math.min(1, 0.42 + dist / 7000);
+  const kind = Math.random() < (0.38 + heat * 0.1) ? "plane" : "bird";
+  const s = 64 + Math.random() * 16;
+  let x = null;
+  for (let n = 0; n < 18; n++) {
+    const hw = kind === "plane" ? 22 : s * 0.36;
+    const tryX = hw + 20 + Math.random() * (W - hw * 2 - 40);
+    const trial = { kind, x: tryX, y: -40, s };
+    if (hasLane(trial)) { x = tryX; break; }
+  }
+  if (x == null) return;
+  if (kind === "plane") {
+    obstacles.push({
+      kind, x, y: -48,
+      vy: 5.1 + heat * 1.5
+    });
+  } else {
+    obstacles.push({
+      kind, x, y: -40,
+      vy: 3.7 + heat * 1.2,
+      s, frame: Math.floor(Math.random() * 4),
+      flap: Math.random() * 80
+    });
+  }
+}
+function burst(label) {
+  cheer = { text: label, t: 0 };
+  const colors = ["#fa2121", "#9f77fc", "#ffd84a", "#7ad7ff", "#ffffff", "#111111"];
+  for (let i = 0; i < 64; i++) {
+    bits.push({
+      x: W * 0.5,
+      y: H * 0.36,
+      vx: (Math.random() - 0.5) * 8,
+      vy: -2.5 - Math.random() * 6,
+      c: colors[i % colors.length],
+      life: 78,
+      w: 4 + Math.random() * 5,
+      rot: Math.random() * 6
+    });
+  }
+}
+function drawCheer() {
+  for (const b of bits) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.rot);
+    ctx.fillStyle = b.c;
+    ctx.fillRect(-b.w / 2, -2, b.w, 3);
+    ctx.restore();
+  }
+  if (cheer && cheer.t < 90) {
+    ctx.fillStyle = "#1a1a1a";
+    ctx.font = "700 42px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(cheer.text, W / 2, H * 0.32);
+    ctx.textAlign = "left";
+  }
+}
+
+// player wing, image space sampled from the scribble, drawn at 96px
+const wingImg = [
+  [36, 166], [52, 138], [76, 108], [100, 107], [112, 124],
+  [132, 108], [156, 90], [180, 83], [204, 99], [224, 126]
+];
+function wingPts(cx, cy, size, flip) {
+  const k = size / 256;
+  const pts = [];
+  for (const [ix, iy] of wingImg) {
+    let x = (ix - 128) * k;
+    let y = (iy - 128) * k;
+    if (flip) { x = -x; y = -y; }
+    pts.push([cx + x, cy + y]);
+  }
+  return pts;
+}
+function distPointSeg(px, py, ax, ay, bx, by) {
+  const abx = bx - ax, aby = by - ay;
+  const apx = px - ax, apy = py - ay;
+  const ab2 = abx * abx + aby * aby || 1;
+  let t = (apx * abx + apy * aby) / ab2;
+  t = Math.max(0, Math.min(1, t));
+  const dx = px - (ax + abx * t);
+  const dy = py - (ay + aby * t);
+  return dx * dx + dy * dy;
+}
+function shapesTouch(a, b, pad) {
+  const lim = pad * pad;
+  for (let i = 0; i < a.length - 1; i++) {
+    for (let j = 0; j < b.length; j++) {
+      if (distPointSeg(b[j][0], b[j][1], a[i][0], a[i][1], a[i + 1][0], a[i + 1][1]) < lim) return true;
+    }
+    for (let j = 0; j < b.length - 1; j++) {
+      if (distPointSeg(a[i][0], a[i][1], b[j][0], b[j][1], b[j + 1][0], b[j + 1][1]) < lim) return true;
+      if (distPointSeg(a[i + 1][0], a[i + 1][1], b[j][0], b[j][1], b[j + 1][0], b[j + 1][1]) < lim) return true;
+    }
+  }
+  return false;
+}
+function planeShape(o) {
+  // paper body only, nose down. no trail.
+  return [[o.x, o.y + 16], [o.x - 16, o.y - 10], [o.x, o.y - 2], [o.x + 16, o.y - 10], [o.x, o.y + 16]];
+}
+function hit(o) {
+  const mine = wingPts(bird.x, bird.y, 96, false);
+  if (o.kind === "plane") return shapesTouch(mine, planeShape(o), 5);
+  const theirs = wingPts(o.x, o.y, o.s || 78, true);
+  return shapesTouch(mine, theirs, 5);
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(32, now - last);
+  last = now;
+  if (!W) resize();
+  if (!bird.x) {
+    bird.x = W * 0.5;
+    bird.y = H * 0.72;
+  }
+
+  if (started && alive) {
+    dist += dt * 0.07;
+    bird.flap += dt;
+    if (bird.flap > 90) { bird.flap = 0; bird.frame = (bird.frame + 1) % 4; }
+    spawn += dt;
+    const heat = Math.min(1, 0.42 + dist / 7000);
+    const every = 720 - heat * 180;
+    if (spawn > every) { spawn = 0; spawnObs(); }
+    const score = Math.floor(dist);
+    while (nextMark < marks.length && score >= marks[nextMark]) {
+      const n = marks[nextMark];
+      burst((n / 1000) + "k");
+      nextMark++;
+    }
+    for (const o of obstacles) {
+      o.y += o.vy * (dt / 16);
+      if (o.kind === "bird") {
+        o.flap += dt;
+        if (o.flap > 110) { o.flap = 0; o.frame = (o.frame + 1) % 4; }
+      }
+    }
+    obstacles = obstacles.filter(o => o.y < H + 80);
+    for (const o of obstacles) {
+      if (hit(o)) {
+        alive = false;
+        if (Math.floor(dist) > best) {
+          best = Math.floor(dist);
+          localStorage.setItem("flyby-best", String(best));
+        }
+      }
+    }
+  }
+
+  if (bits.length) {
+    bits = bits.filter(b => b.life > 0);
+    for (const b of bits) {
+      b.x += b.vx;
+      b.y += b.vy;
+      b.vy += 0.16;
+      b.rot += 0.12;
+      b.life -= 1;
+    }
+  }
+  if (cheer) cheer.t += 1;
+
+  drawSky();
+  for (const o of obstacles) {
+    if (o.kind === "plane") drawPlane(o);
+    else drawOtherBird(o);
+  }
+  drawBird();
+  drawCheer();
+
+  ctx.fillStyle = "#1a1a1a";
+  ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("flyBy  " + Math.floor(dist), 16, 40);
+  ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("best " + best, 16, 60);
+
+  if (!started) {
+    ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("drag to fly up", 16, H - 36);
+  } else if (!alive) {
+    ctx.font = "600 20px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("hit   drag to try again", W / 2 - 96, H * 0.46);
+  }
+
+  requestAnimationFrame(loop);
+}
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
