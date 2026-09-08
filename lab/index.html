@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="flyBy" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" href="icon-192.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#b7e4f6" />
+<title>flyBy</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: #071018;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+  canvas {
+    display: block;
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    touch-action: none;
+    background: #b7e4f6;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const frames = ["art/sprites/bird-01-up.png","art/sprites/bird-02-mid.png","art/sprites/bird-03-down.png","art/sprites/bird-04-mid.png"];
+const imgs = frames.map(src => { const i = new Image(); i.src = src; return i; });
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+let W = 0, H = 0, dpr = 1;
+function phoneBox() {
+  const vv = window.visualViewport;
+  const vw = vv ? vv.width : window.innerWidth;
+  const vh = vv ? vv.height : window.innerHeight;
+  const portraitPhone = vw <= 520 || (vw / vh) < 0.72;
+  if (portraitPhone) return { w: vw, h: vh };
+  const h = vh;
+  const w = Math.min(vw * 0.92, h * (9 / 19.5));
+  return { w, h };
+}
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const box = phoneBox();
+  W = box.w;
+  H = box.h;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (!started) {
+    bird.x = W * 0.5;
+    bird.y = H * 0.72;
+  }
+  layoutClouds();
+}
+window.addEventListener("resize", resize);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", resize);
+}
+document.addEventListener("gesturestart", e => e.preventDefault());
+document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+
+const bird = { x: 0, y: 0, r: 26, frame: 0, flap: 0 };
+let obstacles = [];
+let clouds = [];
+let spawn = 0;
+let dist = 0;
+let skyScroll = 0;
+let alive = true;
+let started = false;
+let best = Number(localStorage.getItem("flyby-best") || 0);
+let pointer = false;
+let bits = [];
+let cheer = null;
+let nextMark = 0;
+let continued = false;
+let safe = 0;
+const marks = [5000, 10000, 25000, 50000, 100000];
+
+function layoutClouds() {
+  if (!W) return;
+  if (clouds.length) return;
+  const n = 7;
+  for (let i = 0; i < n; i++) {
+    clouds.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      s: 46 + Math.random() * 54,
+      puff: 2 + Math.floor(Math.random() * 2)
+    });
+  }
+}
+
+function reset() {
+  bird.x = W * 0.5;
+  bird.y = H * 0.72;
+  bird.frame = 0;
+  bird.flap = 0;
+  obstacles = [];
+  spawn = 40;
+  dist = 0;
+  alive = true;
+  started = true;
+  bits = [];
+  cheer = null;
+  nextMark = 0;
+  continued = false;
+  safe = 0;
+}
+
+function setX(clientX) {
+  const rect = canvas.getBoundingClientRect();
+  bird.x = Math.max(40, Math.min(W - 40, clientX - rect.left));
+}
+
+function localPoint(e) {
+  const rect = canvas.getBoundingClientRect();
+  return [e.clientX - rect.left, e.clientY - rect.top];
+}
+let panel = "menu";
+const PRODUCTS = {
+  night: "com.playflyby.game.theme.night",
+  adfree: "com.playflyby.game.adfree"
+};
+function owns(id) {
+  if (id === "sky") return true;
+  return localStorage.getItem("flyby-own-" + id) === "1";
+}
+function applyTheme(id) {
+  if (id === "night" && !owns("night")) id = "sky";
+  if (id !== "sky" && id !== "night") id = "sky";
+  theme = id;
+  localStorage.setItem("flyby-theme", theme);
+}
+function flybyCall(action, extra) {
+  const msg = Object.assign({ action: action }, extra || {});
+  try {
+    const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.flyby;
+    if (h) { h.postMessage(msg); return true; }
+  } catch (err) {}
+  return false;
+}
+window.flybyOwned = function (state) {
+  if (!state) return;
+  if (state.night) localStorage.setItem("flyby-own-night", "1");
+  if (state.adfree) localStorage.setItem("flyby-own-adfree", "1");
+  if (state.night) applyTheme("night");
+};
+window.flybyReward = function (result) {
+  if (result === "viewed" || result === "none") reset();
+};
+let theme = localStorage.getItem("flyby-theme") || "sky";
+if (theme === "night" && !owns("night")) theme = "sky";
+if (theme !== "sky" && theme !== "night") theme = "sky";
+const themes = [
+  { id: "sky", name: "sky", top: "#d9f3ff", mid: "#bfe6f8", bot: "#9ed4ef", ink: "#1a1a1a", night: false },
+  { id: "night", name: "night", top: "#12182a", mid: "#1a2740", bot: "#0c101c", ink: "#e6d3b0", night: true }
+];
+let stars = [];
+function themeById(id) {
+  return themes.find(t => t.id === id) || themes[0];
+}
+function ink() { return themeById(theme).ink || "#1a1a1a"; }
+const cream = "#e6d3b0";
+function layoutStars() {
+  stars = [];
+  let n = 42;
+  for (let i = 0; i < n; i++) {
+    const s = Math.sin(i * 12.9898) * 43758.5453;
+    const r = s - Math.floor(s);
+    const s2 = Math.sin(i * 78.233) * 12345.678;
+    const r2 = s2 - Math.floor(s2);
+    stars.push({ x: r, y: r2 * 0.92, s: r > 0.82 ? 1.8 : 1.1 });
+  }
+}
+function startBox() {
+  const w = Math.min(200, W - 64);
+  const h = 54;
+  return { x: W / 2 - w / 2, y: H * 0.46, w, h };
+}
+function menuBtn(i) {
+  const w = Math.min(200, W - 64);
+  const h = 46;
+  return { x: W / 2 - w / 2, y: H * 0.46 + 66 + i * 56, w, h };
+}
+function hitBox(b, x, y) {
+  return x >= b.x - 8 && x <= b.x + b.w + 8 && y >= b.y - 8 && y <= b.y + b.h + 8;
+}
+function inStart(x, y) { return hitBox(startBox(), x, y); }
+function toMenu() {
+  started = false;
+  alive = true;
+  pointer = false;
+  obstacles = [];
+  panel = "menu";
+}
+function continueBox() {
+  const w = Math.min(220, W - 64);
+  const h = 54;
+  return { x: W / 2 - w / 2, y: H * 0.48, w, h };
+}
+function deathMenuBox() {
+  const w = Math.min(160, W - 64);
+  const h = 40;
+  return { x: W / 2 - w / 2, y: H * 0.48 + 78, w, h };
+}
+function reportAdBox() {
+  return { x: 16, y: H - 52, w: 110, h: 34 };
+}
+function privacyBox() {
+  return { x: W - 126, y: H - 52, w: 110, h: 34 };
+}
+function storeRow(i) {
+  const w = Math.min(240, W - 48);
+  const h = 64;
+  return { x: W / 2 - w / 2, y: 140 + i * 84, w, h };
+}
+function inContinue(x, y) { return hitBox(continueBox(), x, y); }
+function buyProduct(id) {
+  if (owns(id)) return;
+  flybyCall("buy", { product: id, productId: PRODUCTS[id] });
+}
+function useContinue() {
+  if (owns("adfree")) { reset(); return; }
+  if (!flybyCall("rewarded")) reset();
+}
+canvas.addEventListener("pointerdown", e => {
+  pointer = true;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+  const [x, y] = localPoint(e);
+  if (!started) {
+    if (panel === "menu") {
+      if (inStart(x, y)) { reset(); setX(e.clientX); return; }
+      if (hitBox(menuBtn(0), x, y)) { panel = "options"; return; }
+      if (hitBox(menuBtn(1), x, y)) { panel = "store"; return; }
+    } else if (panel === "options" || panel === "store") {
+      if (hitBox(backBox(), x, y)) { panel = "menu"; return; }
+      if (panel === "options") {
+        themes.forEach((th, i) => {
+          if (!hitBox(themeCard(i), x, y)) return;
+          if (th.id === "night" && !owns("night")) { buyProduct("night"); return; }
+          applyTheme(th.id);
+        });
+      }
+      if (panel === "store") {
+        if (hitBox(storeRow(0), x, y)) { buyProduct("night"); return; }
+        if (hitBox(storeRow(1), x, y)) { buyProduct("adfree"); return; }
+        if (hitBox(storeRow(2), x, y)) { flybyCall("restore"); return; }
+      }
+    }
+    return;
+  }
+  if (!alive) {
+    if (inContinue(x, y)) { useContinue(); return; }
+    if (hitBox(deathMenuBox(), x, y)) { toMenu(); return; }
+    if (hitBox(reportAdBox(), x, y)) { flybyCall("reportAd"); return; }
+    if (hitBox(privacyBox(), x, y)) { flybyCall("privacy"); return; }
+    return;
+  }
+  setX(e.clientX);
+});
+canvas.addEventListener("pointermove", e => { if (pointer && alive && started) setX(e.clientX); });
+canvas.addEventListener("pointerup", () => { pointer = false; });
+canvas.addEventListener("pointercancel", () => { pointer = false; });
+
+function drawSky() {
+  const th = themeById(theme);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, th.top);
+  g.addColorStop(0.45, th.mid);
+  g.addColorStop(1, th.bot);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  if (!stars.length) layoutStars();
+  if (theme === "night") drawNight();
+  else {
+    skyScroll += started && alive ? 1.15 : 0.35;
+    for (const c of clouds) {
+      let y = (c.y + skyScroll) % (H + 160) - 80;
+      drawCloud(c.x, y, c.s);
+    }
+  }
+}
+function drawNight() {
+  ctx.fillStyle = cream;
+  for (const s of stars) {
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H + 24, s.s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  if (!drawNight.moon) {
+    const c = document.createElement("canvas");
+    c.width = 64;
+    c.height = 64;
+    const t = c.getContext("2d");
+    t.fillStyle = "#e6d3b0";
+    t.beginPath();
+    t.arc(26, 32, 20, 0, Math.PI * 2);
+    t.fill();
+    t.globalCompositeOperation = "destination-out";
+    t.beginPath();
+    t.arc(38, 30, 18, 0, Math.PI * 2);
+    t.fill();
+    drawNight.moon = c;
+  }
+  ctx.drawImage(drawNight.moon, W - 96, 52);
+}
+function tintSprite(img, dx, dy, s) {
+  if (theme !== "night") {
+    ctx.drawImage(img, dx, dy, s, s);
+    return;
+  }
+  if (!tintSprite.c) tintSprite.c = document.createElement("canvas");
+  const c = tintSprite.c;
+  if (c.width !== s) { c.width = s; c.height = s; }
+  const t = c.getContext("2d");
+  t.clearRect(0, 0, s, s);
+  t.drawImage(img, 0, 0, s, s);
+  t.globalCompositeOperation = "source-in";
+  t.fillStyle = cream;
+  t.fillRect(0, 0, s, s);
+  t.globalCompositeOperation = "source-over";
+  ctx.drawImage(c, dx, dy);
+}
+
+function drawCloud(x, y, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.strokeStyle = "#2a2a2a";
+  ctx.lineWidth = 2.2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.55, s * 0.16);
+  ctx.bezierCurveTo(-s * 0.78, s * 0.16, -s * 0.7, -s * 0.12, -s * 0.38, -s * 0.1);
+  ctx.bezierCurveTo(-s * 0.36, -s * 0.4, -s * 0.02, -s * 0.42, s * 0.04, -s * 0.14);
+  ctx.bezierCurveTo(s * 0.1, -s * 0.38, s * 0.46, -s * 0.3, s * 0.38, -s * 0.06);
+  ctx.bezierCurveTo(s * 0.7, -s * 0.04, s * 0.68, s * 0.2, s * 0.38, s * 0.18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBird() {
+  const img = imgs[bird.frame];
+  const s = 96;
+  if (img && img.complete && img.naturalWidth) {
+    tintSprite(img, bird.x - s / 2, bird.y - s / 2, s);
+  } else {
+    ctx.strokeStyle = theme === "night" ? cream : "#121212";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(bird.x - 30, bird.y + 10);
+    ctx.lineTo(bird.x - 8, bird.y - 4);
+    ctx.lineTo(bird.x - 2, bird.y + 4);
+    ctx.lineTo(bird.x + 16, bird.y - 8);
+    ctx.lineTo(bird.x + 26, bird.y + 6);
+    ctx.stroke();
+  }
+}
+
+function drawPlane(o) {
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.strokeStyle = theme === "night" ? cream : "#1a1a1a";
+  ctx.lineWidth = 2.4;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.globalAlpha = 0.4;
+  ctx.beginPath();
+  ctx.moveTo(0, -34);
+  ctx.lineTo(0, -18);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 18);
+  ctx.lineTo(-20, -14);
+  ctx.lineTo(0, -4);
+  ctx.lineTo(20, -14);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, 18);
+  ctx.lineTo(0, -12);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawOtherBird(o) {
+  const img = imgs[o.frame % 4];
+  const s = o.s;
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.rotate(Math.PI);
+  if (img && img.complete && img.naturalWidth) {
+    tintSprite(img, -s / 2, -s / 2, s);
+  } else {
+    ctx.strokeStyle = theme === "night" ? cream : "#121212";
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = "round";
+    const lift = [10, 2, -6, 2][o.frame % 4];
+    ctx.beginPath();
+    ctx.moveTo(-28, 8);
+    ctx.quadraticCurveTo(-12, -lift, 0, 2);
+    ctx.quadraticCurveTo(14, -lift - 4, 28, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function halfW(o) {
+  if (o.kind === "plane") return 22;
+  return (o.s || 78) * 0.36;
+}
+function openSpans(extra, bandY) {
+  const band = obstacles.filter(o => o.y < (bandY || 260));
+  if (extra) band.push(extra);
+  const spans = band.map(o => [o.x - halfW(o) - 8, o.x + halfW(o) + 8]).sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const s of spans) {
+    if (!merged.length || s[0] > merged[merged.length - 1][1]) merged.push(s.slice());
+    else merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], s[1]);
+  }
+  const gaps = [];
+  let left = 16;
+  for (const s of merged) {
+    if (s[0] - left >= 8) gaps.push([left, s[0]]);
+    left = Math.max(left, s[1]);
+  }
+  if ((W - 16) - left >= 8) gaps.push([left, W - 16]);
+  return gaps;
+}
+function hasLane(extra, bandY) {
+  return openSpans(extra, bandY).some(g => g[1] - g[0] >= 110);
+}
+let lastHole = 0.5;
+function tier() {
+  const s = dist;
+  if (s < 500) return 0;
+  if (s < 2000) return 1;
+  if (s < 4000) return 2;
+  if (s < 8000) return 3;
+  if (s < 12000) return 4;
+  return 5;
+}
+function pace() {
+  // steps freeze after 12000. gap stays wide so a near-miss still lives.
+  const steps = [
+    { plane: 0.40, planeVy: 6.0, every: 80, gap: 158, minShift: 86, maxShift: 0.34, follow: 999, spawnY: -50 },
+    { plane: 0.44, planeVy: 7.2, every: 60, gap: 156, minShift: 108, maxShift: 0.40, follow: 175, spawnY: -40 },
+    { plane: 0.48, planeVy: 8.3, every: 50, gap: 154, minShift: 122, maxShift: 0.44, follow: 215, spawnY: -28 },
+    { plane: 0.50, planeVy: 9.1, every: 40, gap: 152, minShift: 136, maxShift: 0.48, follow: 245, spawnY: -12 },
+    { plane: 0.52, planeVy: 9.9, every: 40, gap: 150, minShift: 148, maxShift: 0.50, follow: 268, spawnY: 4 },
+    { plane: 0.54, planeVy: 10.6, every: 40, gap: 148, minShift: 160, maxShift: 0.52, follow: 285, spawnY: 16 }
+  ];
+  return steps[tier()];
+}
+function pickGap(gapW, away, p) {
+  const pad = 18;
+  const lo = pad + gapW / 2;
+  const hi = Math.max(lo + 4, W - pad - gapW / 2);
+  const minShift = p.minShift;
+  const maxShift = Math.max(minShift + 24, W * p.maxShift);
+  let best = Math.max(lo, Math.min(hi, away));
+  let bestScore = -1;
+  for (let i = 0; i < 22; i++) {
+    const c = lo + Math.random() * Math.max(1, hi - lo);
+    const d = Math.abs(c - away);
+    if (d < minShift || d > maxShift) continue;
+    const score = d + Math.random() * 8;
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  if (bestScore < 0) {
+    const dir = away > (lo + hi) / 2 ? -1 : 1;
+    best = Math.max(lo, Math.min(hi, away + dir * Math.min(minShift, hi - lo)));
+  }
+  return best;
+}
+function bodyHw(kind, size) {
+  return kind === "plane" ? 26 : Math.max(34, size * 0.4);
+}
+function dropBody(p, x, y, gapL, gapR) {
+  const kind = Math.random() < p.plane ? "plane" : "bird";
+  const size = 58 + Math.random() * 8;
+  const hw = bodyHw(kind, size);
+  x = Math.max(hw + 8, Math.min(W - hw - 8, x));
+  if (x + hw > gapL - 14 && x - hw < gapR + 14) return false;
+  const body = { kind, x, y, vy: p.planeVy };
+  if (kind !== "plane") {
+    body.s = size;
+    body.frame = Math.floor(Math.random() * 4);
+    body.flap = Math.random() * 80;
+  }
+  obstacles.push(body);
+  return true;
+}
+function fillSide(p, a, b, y, gapL, gapR, side) {
+  const w = b - a;
+  if (w < 40) return;
+  const n = w < 96 ? 1 : 2;
+  for (let i = 0; i < n; i++) {
+    const x = a + (i + 0.5) * (w / n);
+    const inner = side < 0 ? i === n - 1 : i === 0;
+    const lead = side < 0 ? 0 : 46;
+    const lift = inner ? lead : lead + 40;
+    dropBody(p, x, y - lift, gapL, gapR);
+  }
+}
+function spawnObs() {
+  const p = pace();
+  const birdLine = H * 0.72;
+  const incoming = obstacles.filter(o => o.y < birdLine + 20);
+  if (incoming.length) {
+    if (p.follow >= 900) return false;
+    const lowest = Math.max(...incoming.map(o => o.y));
+    if (lowest < p.follow) return false;
+    if (obstacles.some(o => o.y < 100)) return false;
+  }
+  const gapW = p.gap;
+  const gapC = pickGap(gapW, lastHole * W, p);
+  const gapL = gapC - gapW / 2;
+  const gapR = gapC + gapW / 2;
+  const y = p.spawnY;
+  fillSide(p, 8, gapL, y, gapL, gapR, -1);
+  fillSide(p, gapR, W - 8, y, gapL, gapR, 1);
+  lastHole = gapC / W;
+  return true;
+}
+function burst(label) {
+  cheer = { text: label, t: 0 };
+  const colors = ["#fa2121", "#9f77fc", "#ffd84a", "#7ad7ff", "#ffffff", "#111111"];
+  for (let i = 0; i < 64; i++) {
+    bits.push({
+      x: W * 0.5,
+      y: H * 0.36,
+      vx: (Math.random() - 0.5) * 8,
+      vy: -2.5 - Math.random() * 6,
+      c: colors[i % colors.length],
+      life: 78,
+      w: 4 + Math.random() * 5,
+      rot: Math.random() * 6
+    });
+  }
+}
+function drawCheer() {
+  for (const b of bits) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.rot);
+    ctx.fillStyle = b.c;
+    ctx.fillRect(-b.w / 2, -2, b.w, 3);
+    ctx.restore();
+  }
+  if (cheer && cheer.t < 90) {
+    ctx.fillStyle = "#1a1a1a";
+    ctx.font = "700 42px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(cheer.text, W / 2, H * 0.32);
+    ctx.textAlign = "left";
+  }
+}
+
+// player wing, image space sampled from the scribble, drawn at 96px
+const wingImg = [
+  [36, 166], [52, 138], [76, 108], [100, 107], [112, 124],
+  [132, 108], [156, 90], [180, 83], [204, 99], [224, 126]
+];
+function wingPts(cx, cy, size, flip) {
+  const k = size / 256;
+  const pts = [];
+  for (const [ix, iy] of wingImg) {
+    let x = (ix - 128) * k;
+    let y = (iy - 128) * k;
+    if (flip) { x = -x; y = -y; }
+    pts.push([cx + x, cy + y]);
+  }
+  return pts;
+}
+function distPointSeg(px, py, ax, ay, bx, by) {
+  const abx = bx - ax, aby = by - ay;
+  const apx = px - ax, apy = py - ay;
+  const ab2 = abx * abx + aby * aby || 1;
+  let t = (apx * abx + apy * aby) / ab2;
+  t = Math.max(0, Math.min(1, t));
+  const dx = px - (ax + abx * t);
+  const dy = py - (ay + aby * t);
+  return dx * dx + dy * dy;
+}
+function shapesTouch(a, b, pad) {
+  const lim = pad * pad;
+  for (let i = 0; i < a.length - 1; i++) {
+    for (let j = 0; j < b.length; j++) {
+      if (distPointSeg(b[j][0], b[j][1], a[i][0], a[i][1], a[i + 1][0], a[i + 1][1]) < lim) return true;
+    }
+    for (let j = 0; j < b.length - 1; j++) {
+      if (distPointSeg(a[i][0], a[i][1], b[j][0], b[j][1], b[j + 1][0], b[j + 1][1]) < lim) return true;
+      if (distPointSeg(a[i + 1][0], a[i + 1][1], b[j][0], b[j][1], b[j + 1][0], b[j + 1][1]) < lim) return true;
+    }
+  }
+  return false;
+}
+function planeShape(o) {
+  // paper body only, nose down. no trail.
+  return [[o.x, o.y + 16], [o.x - 16, o.y - 10], [o.x, o.y - 2], [o.x + 16, o.y - 10], [o.x, o.y + 16]];
+}
+function hit(o) {
+  const mine = wingPts(bird.x, bird.y, 96, false);
+  if (o.kind === "plane") return shapesTouch(mine, planeShape(o), 5);
+  const theirs = wingPts(o.x, o.y, o.s || 78, true);
+  return shapesTouch(mine, theirs, 5);
+}
+
+
+function wobble(x, y, seed) {
+  return [x + Math.sin(seed) * 1.4, y + Math.cos(seed * 1.3) * 1.2];
+}
+function sketchRound(x, y, w, h) {
+  ctx.beginPath();
+  ctx.moveTo(x + 10, y);
+  ctx.lineTo(x + w - 12, y + 1);
+  ctx.quadraticCurveTo(x + w + 1, y + 2, x + w, y + 12);
+  ctx.lineTo(x + w - 1, y + h - 10);
+  ctx.quadraticCurveTo(x + w - 2, y + h + 1, x + w - 12, y + h);
+  ctx.lineTo(x + 11, y + h - 1);
+  ctx.quadraticCurveTo(x - 1, y + h, x, y + h - 12);
+  ctx.lineTo(x + 1, y + 11);
+  ctx.quadraticCurveTo(x, y, x + 10, y);
+  ctx.stroke();
+}
+
+function drawMenu() {
+  ctx.fillStyle = ink();
+  ctx.strokeStyle = ink();
+  ctx.textAlign = "center";
+  ctx.font = "700 54px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("flyBy", W / 2, H * 0.34);
+  ctx.font = "16px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("drag to fly", W / 2, H * 0.34 + 28);
+  if (best) {
+    ctx.font = "15px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("best " + best, W / 2, H * 0.34 + 52);
+  }
+  const b = startBox();
+  ctx.strokeStyle = ink();
+  ctx.fillStyle = ink();
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  sketchRound(b.x, b.y, b.w, b.h);
+  ctx.beginPath();
+  ctx.moveTo(b.x + 22, b.y + 16);
+  ctx.lineTo(b.x + 22, b.y + 40);
+  ctx.lineTo(b.x + 40, b.y + 28);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.font = "600 22px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("start", b.x + b.w / 2 + 10, b.y + 36);
+  drawSketchBtn(menuBtn(0), "options");
+  drawSketchBtn(menuBtn(1), "store");
+  ctx.textAlign = "left";
+}
+function drawSketchBtn(b, label) {
+  ctx.strokeStyle = ink();
+  ctx.fillStyle = ink();
+  ctx.lineWidth = 2.2;
+  sketchRound(b.x, b.y, b.w, b.h);
+  ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(label, b.x + b.w / 2, b.y + 30);
+}
+function backBox() {
+  return { x: 16, y: 18, w: 84, h: 36 };
+}
+function drawBack() {
+  const b = backBox();
+  ctx.strokeStyle = ink();
+  ctx.fillStyle = ink();
+  ctx.lineWidth = 2;
+  sketchRound(b.x, b.y, b.w, b.h);
+  ctx.font = "600 16px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("back", b.x + b.w / 2, b.y + 24);
+  ctx.textAlign = "left";
+}
+function themeCard(i) {
+  const gap = 16;
+  const top = 112;
+  const n = themes.length;
+  const avail = Math.max(180, H - top - 20);
+  const h = Math.min(248, Math.floor((avail - gap * (n - 1)) / n));
+  return { x: 18, y: top + i * (h + gap), w: W - 36, h };
+}
+function paintInkSprite(img, dx, dy, s, color) {
+  if (!img || !img.complete || !img.naturalWidth) return false;
+  if (!paintInkSprite.c) paintInkSprite.c = document.createElement("canvas");
+  const c = paintInkSprite.c;
+  if (c.width !== s) { c.width = s; c.height = s; }
+  const t = c.getContext("2d");
+  t.clearRect(0, 0, s, s);
+  t.drawImage(img, 0, 0, s, s);
+  t.globalCompositeOperation = "source-in";
+  t.fillStyle = color;
+  t.fillRect(0, 0, s, s);
+  t.globalCompositeOperation = "source-over";
+  ctx.drawImage(c, dx, dy);
+  return true;
+}
+function drawThemeShot(th, r) {
+  const labelH = 40;
+  const shot = { x: r.x, y: r.y, w: r.w, h: r.h - labelH };
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(shot.x, shot.y, shot.w, shot.h, 16);
+  ctx.clip();
+  const g = ctx.createLinearGradient(0, shot.y, 0, shot.y + shot.h);
+  g.addColorStop(0, th.top);
+  g.addColorStop(0.45, th.mid);
+  g.addColorStop(1, th.bot);
+  ctx.fillStyle = g;
+  ctx.fillRect(shot.x, shot.y, shot.w, shot.h);
+  const inkc = th.ink || "#1a1a1a";
+  if (th.night) {
+    ctx.fillStyle = cream;
+    for (let i = 0; i < 16; i++) {
+      const sx = shot.x + 18 + ((i * 47) % (shot.w - 36));
+      const sy = shot.y + 16 + ((i * 29) % Math.max(24, shot.h * 0.55));
+      ctx.globalAlpha = 0.8;
+      ctx.beginPath();
+      ctx.arc(sx, sy, i % 5 === 0 ? 1.6 : 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    if (!drawNight.moon) {
+      const c = document.createElement("canvas");
+      c.width = 64; c.height = 64;
+      const m = c.getContext("2d");
+      m.fillStyle = "#e6d3b0";
+      m.beginPath(); m.arc(26, 32, 20, 0, Math.PI * 2); m.fill();
+      m.globalCompositeOperation = "destination-out";
+      m.beginPath(); m.arc(38, 30, 18, 0, Math.PI * 2); m.fill();
+      drawNight.moon = c;
+    }
+    ctx.drawImage(drawNight.moon, shot.x + shot.w - 58, shot.y + 10, 42, 42);
+  } else {
+    ctx.save();
+    ctx.translate(shot.x + shot.w * 0.72, shot.y + 36);
+    ctx.scale(0.55, 0.55);
+    drawCloud(0, 0, 54);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(shot.x + 48, shot.y + 58);
+    ctx.scale(0.4, 0.4);
+    drawCloud(0, 0, 42);
+    ctx.restore();
+  }
+  const foe = th.foe || imgs[2];
+  const player = th.player || imgs[1];
+  const fs = Math.min(64, shot.h * 0.38);
+  ctx.save();
+  ctx.translate(shot.x + shot.w * 0.68, shot.y + shot.h * 0.28);
+  ctx.rotate(Math.PI);
+  if (!paintInkSprite(foe, -fs / 2, -fs / 2, fs, inkc)) {
+    ctx.strokeStyle = inkc;
+    ctx.lineWidth = 2.4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(-22, 6);
+    ctx.quadraticCurveTo(0, -10, 22, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.save();
+  ctx.translate(shot.x + shot.w * 0.34, shot.y + shot.h * 0.42);
+  ctx.strokeStyle = inkc;
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.globalAlpha = 0.45;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);
+  ctx.lineTo(0, -10);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 14);
+  ctx.lineTo(-16, -10);
+  ctx.lineTo(0, -2);
+  ctx.lineTo(16, -10);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, 14);
+  ctx.lineTo(0, -8);
+  ctx.stroke();
+  ctx.restore();
+  const ps = Math.min(78, shot.h * 0.46);
+  if (!paintInkSprite(player, shot.x + 18, shot.y + shot.h - ps - 10, ps, inkc)) {
+    ctx.strokeStyle = inkc;
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    const bx = shot.x + 52;
+    const by = shot.y + shot.h - 36;
+    ctx.moveTo(bx - 24, by + 8);
+    ctx.lineTo(bx - 6, by - 6);
+    ctx.lineTo(bx + 2, by + 2);
+    ctx.lineTo(bx + 18, by - 8);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.fillStyle = ink();
+  ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(th.name, r.x + 8, r.y + r.h - 12);
+  ctx.textAlign = "right";
+  const label = th.id === "night" && !owns("night") ? "buy" : (theme === th.id ? "on" : "use");
+  ctx.fillText(label, r.x + r.w - 6, r.y + r.h - 12);
+  ctx.textAlign = "left";
+}
+function drawOptions() {
+  ctx.fillStyle = theme === "night" ? "rgba(8,12,22,0.55)" : "rgba(183,228,246,0.72)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = ink();
+  ctx.textAlign = "center";
+  ctx.font = "700 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("options", W / 2, 78);
+  drawBack();
+  themes.forEach((th, i) => {
+    const r = themeCard(i);
+    const on = theme === th.id;
+    ctx.strokeStyle = ink();
+    ctx.lineWidth = on ? 3.4 : 1.8;
+    sketchRound(r.x, r.y, r.w, r.h);
+    drawThemeShot(th, r);
+    if (on) {
+      ctx.strokeStyle = ink();
+      ctx.lineWidth = 3.4;
+      sketchRound(r.x, r.y, r.w, r.h);
+    }
+  });
+  ctx.textAlign = "left";
+}
+function drawStore() {
+  ctx.fillStyle = ink();
+  ctx.strokeStyle = ink();
+  ctx.textAlign = "center";
+  ctx.font = "700 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("store", W / 2, 96);
+  drawBack();
+  const rows = [
+    ["night", owns("night") ? "owned" : "buy"],
+    ["no ads", owns("adfree") ? "owned" : "buy"],
+    ["restore", ""]
+  ];
+  rows.forEach((row, i) => {
+    const r = storeRow(i);
+    ctx.lineWidth = 2.2;
+    sketchRound(r.x, r.y, r.w, r.h);
+    ctx.font = "600 20px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(row[0], r.x + r.w / 2, r.y + 28);
+    if (row[1]) {
+      ctx.font = "15px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(row[1], r.x + r.w / 2, r.y + 48);
+    }
+  });
+  ctx.textAlign = "left";
+}
+function drawDeath() {
+  ctx.fillStyle = "rgba(185,220,240,0.35)";
+  ctx.fillRect(0, H * 0.28, W, H * 0.42);
+  ctx.strokeStyle = "#1a1a1a";
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.font = "600 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#1a1a1a";
+  ctx.fillText("hit", W / 2, H * 0.4);
+  const b = continueBox();
+  sketchRound(b.x, b.y, b.w, b.h);
+  ctx.beginPath();
+  ctx.moveTo(b.x + 22, b.y + 16);
+  ctx.lineTo(b.x + 22, b.y + 38);
+  ctx.lineTo(b.x + 38, b.y + 27);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.font = "600 20px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("again", b.x + b.w / 2 + 8, b.y + 34);
+  ctx.font = "15px ui-sans-serif, system-ui, sans-serif";
+  ctx.font = "15px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(owns("adfree") ? "new flight" : "watch for a new flight", W / 2, b.y + b.h + 22);
+  const m = deathMenuBox();
+  ctx.lineWidth = 1.8;
+  sketchRound(m.x, m.y, m.w, m.h);
+  ctx.font = "600 16px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("menu", m.x + m.w / 2, m.y + 26);
+  const rep = reportAdBox();
+  const priv = privacyBox();
+  ctx.lineWidth = 1.6;
+  sketchRound(rep.x, rep.y, rep.w, rep.h);
+  sketchRound(priv.x, priv.y, priv.w, priv.h);
+  ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("report ad", rep.x + rep.w / 2, rep.y + 22);
+  ctx.fillText("privacy", priv.x + priv.w / 2, priv.y + 22);
+  ctx.textAlign = "left";
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(32, now - last);
+  last = now;
+  if (!W) resize();
+  if (!bird.x) {
+    bird.x = W * 0.5;
+    bird.y = H * 0.72;
+  }
+
+  if (started && alive) {
+    dist += dt * 0.07;
+    bird.flap += dt;
+    if (bird.flap > 90) { bird.flap = 0; bird.frame = (bird.frame + 1) % 4; }
+    spawn += dt;
+    if (spawn > pace().every) {
+      if (spawnObs()) spawn = 0;
+    }
+    const score = Math.floor(dist);
+    while (nextMark < marks.length && score >= marks[nextMark]) {
+      const n = marks[nextMark];
+      burst((n / 1000) + "k");
+      nextMark++;
+    }
+    for (const o of obstacles) {
+      o.y += o.vy * (dt / 16);
+      if (o.kind === "bird") {
+        o.flap += dt;
+        if (o.flap > 110) { o.flap = 0; o.frame = (o.frame + 1) % 4; }
+      }
+    }
+    obstacles = obstacles.filter(o => o.y < H + 80);
+    for (const o of obstacles) {
+      if (hit(o)) {
+        if (Math.floor(dist) > best) {
+          best = Math.floor(dist);
+          localStorage.setItem("flyby-best", String(best));
+        }
+        alive = false;
+      }
+    }
+  }
+
+  if (bits.length) {
+    bits = bits.filter(b => b.life > 0);
+    for (const b of bits) {
+      b.x += b.vx;
+      b.y += b.vy;
+      b.vy += 0.16;
+      b.rot += 0.12;
+      b.life -= 1;
+    }
+  }
+  if (cheer) cheer.t += 1;
+
+  drawSky();
+  for (const o of obstacles) {
+    if (o.kind === "plane") drawPlane(o);
+    else drawOtherBird(o);
+  }
+  drawBird();
+  drawCheer();
+
+  if (started || panel === "menu") {
+    ctx.fillStyle = ink();
+    ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("flyBy  " + Math.floor(dist), 16, 40);
+    ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("best " + best, 16, 60);
+  }
+
+  if (started && !alive) drawDeath();
+  else if (!started) {
+    if (panel === "options") drawOptions();
+    else if (panel === "store") drawStore();
+    else drawMenu();
+  }
+
+  requestAnimationFrame(loop);
+}
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
