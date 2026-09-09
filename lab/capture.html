@@ -361,12 +361,12 @@ function toMenu() {
 function continueBox() {
   const w = Math.min(220, W - 64);
   const h = 54;
-  return { x: W / 2 - w / 2, y: H * 0.52, w, h };
+  return { x: W / 2 - w / 2, y: H * 0.48, w, h };
 }
 function deathMenuBox() {
   const w = Math.min(160, W - 64);
   const h = 40;
-  return { x: W / 2 - w / 2, y: H * 0.52 + 78, w, h };
+  return { x: W / 2 - w / 2, y: H * 0.48 + 78, w, h };
 }
 function reportAdBox() {
   return { x: 16, y: H - 52, w: 110, h: 34 };
@@ -1018,7 +1018,7 @@ function drawNight() {
     t.fill();
     drawNight.moon = c;
   }
-  ctx.drawImage(drawNight.moon, W - 96, 52);
+  ctx.drawImage(drawNight.moon, W - 96, (window.__moonY != null ? window.__moonY : 52));
 }
 function isDarkTheme() { return theme === "night" || theme === "space"; }
 function tintSprite(img, dx, dy, s) {
@@ -1060,9 +1060,33 @@ function drawCloud(x, y, s) {
 }
 
 function drawBird() {
+  const heroScale = window.__flybyHeroScale || 1;
+  // Soft shadow under hero only when explicitly enabled (Carlos: keep OFF for cover)
+  if (window.__flybyHeroGlow) {
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = "#000000";
+    ctx.beginPath();
+    ctx.ellipse(bird.x, bird.y + 18 * heroScale, 34 * heroScale, 10 * heroScale, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (isDarkTheme()) {
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = cream;
+      ctx.beginPath();
+      ctx.ellipse(bird.x, bird.y, 42 * heroScale, 22 * heroScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.ellipse(bird.x, bird.y, 40 * heroScale, 20 * heroScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
   if (character === "ufo") {
     // Filled UFO art reads larger than the thin bird line at the same box — draw ~74.
-    const s = 74;
+    const s = 74 * heroScale;
     const img = ufoImgs[bird.frame % 4];
     // UFO keeps purple/silver color on every theme (never cream-tint)
     if (img && img.complete && img.naturalWidth) {
@@ -1083,7 +1107,7 @@ function drawBird() {
     ctx.stroke();
     return;
   }
-  const s = 96;
+  const s = 96 * (window.__flybyHeroScale || 1);
   const img = imgs[bird.frame];
   if (img && img.complete && img.naturalWidth) {
     // Bird cream-inks on Night/Space via tintSprite; full color on Sky
@@ -1943,16 +1967,14 @@ function drawStore() {
 function drawDeath() {
   ctx.fillStyle = "rgba(185,220,240,0.35)";
   ctx.fillRect(0, H * 0.28, W, H * 0.42);
-  ctx.strokeStyle = ink();
+  ctx.strokeStyle = "#1a1a1a";
   ctx.lineWidth = 2.2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.font = "600 28px ui-sans-serif, system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillStyle = ink();
+  ctx.fillStyle = "#1a1a1a";
   ctx.fillText("hit", W / 2, H * 0.4);
-  ctx.font = "600 22px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText(String(Math.floor(dist)), W / 2, H * 0.4 + 34);
   const b = continueBox();
   sketchRound(b.x, b.y, b.w, b.h);
   ctx.beginPath();
@@ -1999,7 +2021,7 @@ function loop(now) {
     bird.y = H * 0.72;
   }
 
-  if (started && alive) {
+  if (started && alive && !window.__flybyFreeze) {
     dist += dt * 0.07;
     bird.flap += dt;
     if (bird.flap > 90) { bird.flap = 0; bird.frame = (bird.frame + 1) % 4; }
@@ -2100,6 +2122,51 @@ function loop(now) {
 }
 resize();
 requestAnimationFrame(loop);
+
+// CAPTURE BRIDGE
+window.__flyby = {
+  get theme() { return theme; },
+  get character() { return character; },
+  get W() { return W; },
+  get H() { return H; },
+  applyTheme, applyCharacter, reset, syncChrome, layoutStars, layoutSpace, layoutClouds,
+  setScene(opts) {
+    applyTheme(opts.theme);
+    applyCharacter(opts.character);
+    reset();
+    spawn = 1e9;
+    dist = opts.dist || 520;
+    best = Math.max(best, dist);
+    bird.x = opts.birdX;
+    bird.y = opts.birdY;
+    bird.frame = opts.birdFrame || 1;
+    obstacles = (opts.obstacles || []).map(o => Object.assign({}, o));
+    if (opts.theme === 'sky') {
+      clouds = opts.clouds || clouds;
+      skyScroll = 0;
+    }
+    if (opts.theme === 'space') {
+      if (opts.planets) planets = opts.planets.slice();
+      else layoutSpace();
+    }
+    if (!stars.length) layoutStars();
+    started = true;
+    alive = true;
+    panel = 'menu';
+    // Carlos: no hero emphasis by default — normal gameplay size, no glow/shadow
+    window.__flybyHeroScale = (opts.heroScale != null ? opts.heroScale : 1);
+    window.__flybyHeroGlow = !!opts.heroGlow;
+    window.__flybyFreeze = true;
+  },
+  hideHud() {
+    window.__hideHud = true;
+  }
+};
+const _fillText = CanvasRenderingContext2D.prototype.fillText;
+CanvasRenderingContext2D.prototype.fillText = function(text, x, y, ...rest) {
+  if (window.__hideHud && typeof text === 'string' && (text.startsWith('flyBy') || text.startsWith('best'))) return;
+  return _fillText.call(this, text, x, y, ...rest);
+};
 </script>
 </body>
 </html>
