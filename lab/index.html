@@ -210,12 +210,9 @@ const PRODUCTS = {
   upgrade_ufo: "com.playflyby.game.upgrade.ufo",
   upgrade_space: "com.playflyby.game.upgrade.space"
 };
-// LAB ONLY (playflyby.com/lab): unlock paid themes/characters free for Android/browser tests.
-// Do not copy this owns() into the App Store binary.
 function owns(id) {
   if (id === "sky" || id === "bird") return true;
-  if (id === "night" || id === "space" || id === "ufo" || id === "adfree") return true;
-  if (id === "spaceufo" || id === "upgrade_ufo" || id === "upgrade_space") return true;
+  if (id === "spaceufo") return owns("space") && owns("ufo");
   return localStorage.getItem("flyby-own-" + id) === "1";
 }
 function chromeColorForTheme(id) {
@@ -361,12 +358,12 @@ function toMenu() {
 function continueBox() {
   const w = Math.min(220, W - 64);
   const h = 54;
-  return { x: W / 2 - w / 2, y: H * 0.48, w, h };
+  return { x: W / 2 - w / 2, y: H * 0.52, w, h };
 }
 function deathMenuBox() {
   const w = Math.min(160, W - 64);
   const h = 40;
-  return { x: W / 2 - w / 2, y: H * 0.48 + 78, w, h };
+  return { x: W / 2 - w / 2, y: H * 0.52 + 78, w, h };
 }
 function reportAdBox() {
   return { x: 16, y: H - 52, w: 110, h: 34 };
@@ -1943,14 +1940,16 @@ function drawStore() {
 function drawDeath() {
   ctx.fillStyle = "rgba(185,220,240,0.35)";
   ctx.fillRect(0, H * 0.28, W, H * 0.42);
-  ctx.strokeStyle = "#1a1a1a";
+  ctx.strokeStyle = ink();
   ctx.lineWidth = 2.2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.font = "600 28px ui-sans-serif, system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillStyle = "#1a1a1a";
+  ctx.fillStyle = ink();
   ctx.fillText("hit", W / 2, H * 0.4);
+  ctx.font = "600 22px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(String(Math.floor(dist)), W / 2, H * 0.4 + 34);
   const b = continueBox();
   sketchRound(b.x, b.y, b.w, b.h);
   ctx.beginPath();
