@@ -13,7 +13,7 @@
 <meta property="og:url" content="https://playflyby.com/" />
 <meta property="og:title" content="flyBy — free on the App Store" />
 <meta property="og:description" content="Free endless flyer. Drag to fly. Dodge the planes. US App Store." />
-<meta property="og:image" content="https://playflyby.com/art/og-share.png?v=2" />
+<meta property="og:image" content="https://playflyby.com/art/og-share.png?v=3" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta property="og:image:alt" content="flyBy sky gameplay — drag to fly, dodge planes" />
@@ -21,7 +21,7 @@
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="flyBy — free on the App Store" />
 <meta name="twitter:description" content="Free endless flyer. Drag to fly. Dodge the planes. US App Store." />
-<meta name="twitter:image" content="https://playflyby.com/art/og-share.png?v=2" />
+<meta name="twitter:image" content="https://playflyby.com/art/og-share.png?v=3" />
 
 <style>
   :root {
@@ -112,20 +112,28 @@
   .btn svg { flex-shrink: 0; }
   .qr-wrap {
     flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     text-align: center;
-    background: rgba(255,255,255,0.55);
+    background: #ffffff;
     border-radius: 20px;
-    padding: 16px;
+    padding: 18px 18px 14px;
+    box-shadow: 0 8px 24px rgba(20, 50, 80, 0.12);
+    margin-inline: auto;
   }
   .qr-wrap img {
     width: 148px;
     height: 148px;
     display: block;
-    border-radius: 8px;
+    margin: 0 auto;
+    object-fit: contain;
+    background: #ffffff;
   }
   .qr-wrap span {
     display: block;
-    margin-top: 8px;
+    margin-top: 10px;
     font-size: 13px;
     opacity: 0.8;
   }
@@ -156,7 +164,7 @@
 <main class="wrap">
   <div class="hero">
     <img
-      src="/art/og-share.png?v=2"
+      src="/art/og-share.png?v=3"
       width="1200"
       height="630"
       alt="flyBy sky gameplay — drag to fly, dodge planes"
@@ -181,7 +189,7 @@
       </a>
     </div>
     <div class="qr-wrap">
-      <img src="/art/qr-appstore.png" width="148" height="148" alt="QR code to download flyBy on the App Store" />
+      <img src="/art/qr-appstore.png?v=3" width="148" height="148" alt="QR code to download flyBy on the App Store" />
       <span>Scan to open on your phone</span>
     </div>
   </div>
