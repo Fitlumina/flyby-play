@@ -44,7 +44,33 @@ const ufoImgs = ufoFrames.map(src => { const i = new Image(); i.src = src; retur
 const foeUfoImg = (() => { const i = new Image(); i.src = "art/sprites/ufo-foe.png"; return i; })();
 const meteorFrames = ["art/sprites/meteor-01.png","art/sprites/meteor-02.png","art/sprites/meteor-03.png"];
 const meteorImgs = meteorFrames.map(src => { const i = new Image(); i.src = src; return i; });
+// Carlos-locked Future set (not the PR #4 placeholders): player 01–04, foes, backdrop, store icons.
+const flyTaxiFrames = [
+  "art/future/fly-taxi-player-01.png",
+  "art/future/fly-taxi-player-02.png",
+  "art/future/fly-taxi-player-03.png",
+  "art/future/fly-taxi-player-04.png"
+];
+const flyTaxiImgs = flyTaxiFrames.map(src => { const i = new Image(); i.src = src; return i; });
 function loadImg(src) { const i = new Image(); i.src = src; return i; }
+const flyTaxiTiltOn = {
+  left: loadImg("art/future/fly-taxi-tilt-left.png"),
+  center: loadImg("art/future/fly-taxi-tilt-center.png"),
+  right: loadImg("art/future/fly-taxi-tilt-right.png")
+};
+const flyTaxiTiltOff = {
+  left: loadImg("art/future/fly-taxi-tilt-left-off.png"),
+  center: loadImg("art/future/fly-taxi-tilt-center-off.png"),
+  right: loadImg("art/future/fly-taxi-tilt-right-off.png")
+};
+const foeAirplaneImg = loadImg("art/future/foe-airplane.png");
+const foeFlyingCarImg = loadImg("art/future/foe-flying-car.png");
+const futureBackdropImg = loadImg("art/future/future-backdrop.png");
+const futureBuildingsLeftImg = loadImg("art/future/future-buildings-left.png");
+const futureBuildingsRightImg = loadImg("art/future/future-buildings-right.png");
+const storeIconFutureImg = loadImg("art/future/store-icon-future.png");
+const storeIconFlyTaxiImg = loadImg("art/future/store-icon-fly-taxi.png");
+const storeFlyTaxiCharacterImg = loadImg("art/future/store-fly-taxi-character.png");
 
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
@@ -76,6 +102,7 @@ function resize() {
   }
   layoutClouds();
   layoutSpace();
+  layoutFuture();
 }
 window.addEventListener("resize", resize);
 if (window.visualViewport) {
@@ -96,6 +123,1076 @@ let skyScroll = 0;
 let alive = true;
 let started = false;
 let best = Number(localStorage.getItem("flyby-best") || 0);
+/** Classic (default) or Arcade. Arcade off = Classic path 100% unchanged. */
+let gameMode = localStorage.getItem("flyby-game-mode") === "arcade" ? "arcade" : "classic";
+function isArcade() { return gameMode === "arcade"; }
+function applyGameMode(id) {
+  if (id !== "classic" && id !== "arcade") return;
+  gameMode = id;
+  try { localStorage.setItem("flyby-game-mode", id); } catch (err) {}
+  resetArcadeRunState();
+}
+function gameModeLabel() { return isArcade() ? "Arcade" : "Classic"; }
+
+/** Arcade perks — orb sprites + glow/breathe. MG/laser combat = Vibe A Neon Glow. */
+const ARCADE_PERK_DEFS = Object.freeze([
+  { id: "mg", label: "MG", duration: 15, color: "#f0a020", src: "art/sprites/arcade/machine-gun.png" },
+  { id: "laser", label: "LASER", duration: 15, color: "#e04070", src: "art/sprites/arcade/laser.png" },
+  { id: "invincible", label: "GHOST", duration: 12, color: "#60d0ff", src: "art/sprites/arcade/ghost.png" },
+  { id: "spare", label: "1UP", duration: 0, color: "#50e090", scoreGate: 5500, src: "art/sprites/arcade/spare-life.png" }
+]);
+const arcadePerkImgs = Object.fromEntries(
+  ARCADE_PERK_DEFS.map(d => [d.id, loadImg(d.src)])
+);
+// SPRITE_SWAP_HOOK — Vibe A Neon Glow projectiles (horizontal, tip +X)
+const arcadeMgBulletImg = loadImg("art/sprites/arcade/mg-bullet-vibe-a.png");
+const arcadeLaserBoltImg = loadImg("art/sprites/arcade/laser-bolt-vibe-a.png");
+const arcadeMgBulletSketchImg = loadImg("art/sprites/arcade/mg-bullet-sketch.png");
+const arcadeLaserBoltSketchImg = loadImg("art/sprites/arcade/laser-bolt-sketch.png");
+const arcadeLaserBoltSketchNightImg = loadImg("art/sprites/arcade/laser-bolt-sketch-night.png");
+let arcadePickups = [];
+let arcadeActive = null; // { id, label, color, until, pop } or null
+let arcadeFormSeenId = "";
+let arcadeFormVariant = ""; // sweep|gallery|chase|tunnel|weave|squeeze|corridor|pinch|slam
+const ARCADE_FORM_POOLS = {
+  mg: ["gallery", "gallery", "gallery", "sweep", "chase"], // ~60% gallery
+  laser: ["tunnel", "weave", "squeeze"],
+  invincible: ["corridor", "pinch", "slam"]
+};
+let arcadeFormSweepSide = 0;   // mg: -1 pack on the left, +1 pack on the right
+let arcadeFormTunnelX = 0;
+let arcadeFormTunnelDir = 1;
+let arcadeFormGhostSide = 0;   // -1 left lip, +1 right lip
+let arcadeSpareArmed = false;
+let arcadePerkSpawn = 0;
+let arcadeBullets = [];
+let arcadeFireAt = 0;
+let arcadeSparks = [];
+let arcadeDeathFx = [];
+let playerDeathFx = null;
+const ARCADE_DEATH_FX_CAP = 10;
+// Shard-break absorb (replaces rejected vacuum-stretch + 14 motes on one sprite).
+const ARCADE_ABSORB_FLY_MS = 200;      // approach: intact orb flies toward player; breathe/glow ON
+const ARCADE_ABSORB_SHATTER_MS = 160;  // shatter: whole orb breaks into independent shards
+const ARCADE_ABSORB_STREAM_MS = 340;   // stream: shards pull into player center; scale → 0
+const ARCADE_ABSORB_SPARK_MS = 100;    // vanish: contact spark; shards gone
+const ARCADE_ABSORB_MS = ARCADE_ABSORB_FLY_MS + ARCADE_ABSORB_SHATTER_MS + ARCADE_ABSORB_STREAM_MS + ARCADE_ABSORB_SPARK_MS;
+const ARCADE_ABSORB_SHARD_N = 12;
+let arcadeOrbPop = null; // { id, x0, y0, bx0, by0, color, t0, scrubAge?, shards[] }
+function resetArcadeRunState() {
+  arcadePickups = [];
+  arcadeActive = null;
+  arcadeFormSeenId = "";
+  arcadeFormVariant = "";
+  arcadeFormSweepSide = 0;
+  arcadeFormTunnelX = 0;
+  arcadeFormTunnelDir = 1;
+  arcadeFormGhostSide = 0;
+  arcadeSpareArmed = false;
+  arcadePerkSpawn = isArcade() ? 900 : 0; // delay before first single orb
+  arcadeOrbPop = null;
+  arcadeBullets = [];
+  arcadeFireAt = 0;
+  arcadeSparks = [];
+  arcadeDeathFx = [];
+  playerDeathFx = null;
+  if (typeof window !== "undefined") window.__arcadeFormJustExpired = false;
+}
+/** Snapshot absorb pop. x0/y0 = orb contact spawn; bx0/by0 = player at contact (tracking origin). */
+function makeArcadeOrbPop(id, x0, y0, color, extra) {
+  const tgt = arcadePlayerAbsorbTarget();
+  const pop = {
+    id, x0, y0, color,
+    bx0: tgt.x, by0: tgt.y,
+    t0: performance.now(),
+    shards: makeArcadeAbsorbShards()
+  };
+  if (extra) Object.assign(pop, extra);
+  return pop;
+}
+/** Carlos lock 2026-09-21: timed (MG/laser/ghost) replaces active timed — no double.
+ *  Spare is exception: one spare armed + one timed OK. Spare max = 1 (no stack). */
+function applyArcadePickup(p) {
+  arcadeOrbPop = makeArcadeOrbPop(p.id, p.x, p.y, p.color);
+  if (p.id === "spare") {
+    if (arcadeSpareArmed) {
+      // already holding spare — ignore second spare (no stack)
+      showBuyToast("Spare already armed");
+      return;
+    }
+    arcadeSpareArmed = true; // keeps any active timed perk
+    showBuyToast("Spare life armed");
+    return;
+  }
+  // combat/timed orb: cancel/replace current timed perk (spare stays if armed)
+  arcadeBullets = [];
+  arcadeFireAt = 0;
+  arcadeActive = {
+    id: p.id,
+    label: p.label,
+    color: p.color,
+    // Absorb plays inside the window; extend so the 15s/12s is not eaten.
+    until: performance.now() + p.duration * 1000 + ARCADE_ABSORB_MS
+  };
+  arcadeFormArm(p.id, { force: true });
+  showBuyToast(p.label);
+}
+/** Visual only: Ghost perk fades the playable. Last 2.8s square-flashes opaque ↔ 0.55, faster as it ends. */
+const ARCADE_GHOST_ALPHA = 0.55;
+const ARCADE_GHOST_FLASH_MS = 2800;
+function arcadeGhostAlpha() {
+  if (!arcadeActive || arcadeActive.id !== "invincible") return 1;
+  const remain = arcadeActive.until - performance.now();
+  if (remain <= 0) return 1;
+  if (remain > ARCADE_GHOST_FLASH_MS) return ARCADE_GHOST_ALPHA;
+  const t = 1 - (remain / ARCADE_GHOST_FLASH_MS);
+  const period = 400 - t * 320; // 400→80
+  const phase = (ARCADE_GHOST_FLASH_MS - remain) % period;
+  return phase < period * 0.5 ? 1 : ARCADE_GHOST_ALPHA;
+}
+function maybeSpawnArcadePerk(score) {
+  if (!isArcade() || !started || !alive) return;
+  if (window.__arcadeDemoCombat) return;
+  if (window.__arcadeDemoGhost) return;
+  if (window.__arcadeDemoFormation) return;
+  // one on path at a time — never cluster
+  if (arcadePickups.length > 0) return;
+  const pool = ARCADE_PERK_DEFS.filter(d => {
+    if (d.id === "spare") {
+      // spare max 1: do not spawn another while armed
+      return score >= (d.scoreGate || 5500) && !arcadeSpareArmed;
+    }
+    return true;
+  });
+  if (!pool.length) return;
+  const def = pool[Math.floor(Math.random() * pool.length)];
+  const x = W * (0.18 + Math.random() * 0.64);
+  arcadePickups.push({
+    id: def.id,
+    label: def.label,
+    color: def.color,
+    duration: def.duration,
+    x,
+    y: -40,
+    r: 22,
+    vy: 3.2 + Math.random() * 1.2,
+    born: performance.now()
+  });
+}
+function tickArcadePerks(dt, score) {
+  if (!isArcade()) return;
+  // Capture scrub (?demoPickup&t=): keep seeded orb/pop/active frozen for still/GIF frames
+  if (window.__arcadeCaptureScrub) return;
+  // spaced through the run: only advance spawn clock when path is clear
+  if (arcadePickups.length === 0) {
+    arcadePerkSpawn += dt;
+    // ~2.8–5.2s between singles (far apart; not clumps)
+    if (arcadePerkSpawn > 2800 + Math.random() * 2400) {
+      arcadePerkSpawn = 0;
+      maybeSpawnArcadePerk(score);
+    }
+  } else {
+    arcadePerkSpawn = 0;
+  }
+  for (const p of arcadePickups) p.y += p.vy * (dt / 16);
+  arcadePickups = arcadePickups.filter(p => p.y < H + 48);
+  arcadePickups = arcadePickups.filter(p => {
+    const dx = p.x - bird.x;
+    const dy = p.y - bird.y;
+    if (dx * dx + dy * dy > (p.r + bird.r) * (p.r + bird.r)) return true;
+    applyArcadePickup(p);
+    return false;
+  });
+  if (arcadeActive && performance.now() >= arcadeActive.until) {
+    arcadeActive = null;
+    arcadeFormSeenId = "";
+    arcadeFormVariant = "";
+    arcadeFormSweepSide = 0;
+    arcadeFormTunnelX = 0;
+    arcadeFormTunnelDir = 1;
+    arcadeFormGhostSide = 0;
+    window.__arcadeFormJustExpired = true;
+  }
+  if (arcadeOrbPop && performance.now() - arcadeOrbPop.t0 > ARCADE_ABSORB_MS) arcadeOrbPop = null;
+}
+/** Soft halo so orbs read on Sky and dark themes (Night/Space/Future). */
+function drawArcadeOrbSprite(img, x, y, size, color, glow, scale) {
+  // Prefer glow intensity pulse over hard PNG scale (avoids square canvas edges)
+  const s = size * (scale == null ? 1 : scale);
+  ctx.save();
+  ctx.translate(x, y);
+  // Soft circular halo ONLY via arc fill (source-over — no "lighter" square fringe)
+  ctx.globalCompositeOperation = "source-over";
+  const haloR = s * (0.58 + glow * 0.16);
+  const g = ctx.createRadialGradient(0, 0, s * 0.22, 0, 0, haloR);
+  // parse hex color for alpha stops
+  let r = 255, gch = 180, b = 80;
+  if (typeof color === "string" && color[0] === "#" && color.length >= 7) {
+    r = parseInt(color.slice(1, 3), 16);
+    gch = parseInt(color.slice(3, 5), 16);
+    b = parseInt(color.slice(5, 7), 16);
+  }
+  // glow is already 0.3..0.7 soft; keep peak alpha gentle (no spike)
+  const a0 = 0.14 + glow * 0.32;
+  g.addColorStop(0, "rgba(" + r + "," + gch + "," + b + "," + a0 + ")");
+  g.addColorStop(0.55, "rgba(" + r + "," + gch + "," + b + "," + (a0 * 0.35) + ")");
+  g.addColorStop(1, "rgba(" + r + "," + gch + "," + b + ",0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, haloR, 0, Math.PI * 2);
+  ctx.fill();
+  // Draw sprite inside a hard circle — never expose PNG rect
+  ctx.beginPath();
+  ctx.arc(0, 0, s * 0.46, 0, Math.PI * 2);
+  ctx.clip();
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, -s / 2, -s / 2, s, s);
+  } else {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.34, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+/** Shared 0..1 ease for glow + breathe — same phase, same ~1.9s period. */
+function arcadePulse01(tMs) {
+  // never raw sin in draw paths (raw sin goes negative → hard flash)
+  return 0.5 + 0.5 * Math.sin((tMs / 1000) * Math.PI * 2 / 1.9);
+}
+function arcadeBreathe(tMs) {
+  // idle: tiny scale only; stays synced with glow
+  const u = arcadePulse01(tMs);
+  return 1 + (u - 0.5) * 0.04; // ~0.98..1.02
+}
+function arcadeGlow(tMs) {
+  // soft continuous intensity — eases with breathe; no flash / hard on-off
+  const u = arcadePulse01(tMs);
+  return 0.30 + 0.40 * u; // ~0.30..0.70
+}
+function arcadeAbsorbPhaseAt(age) {
+  let t = Math.max(0, age);
+  if (t < ARCADE_ABSORB_FLY_MS) return { name: "approach", u: t / ARCADE_ABSORB_FLY_MS };
+  t -= ARCADE_ABSORB_FLY_MS;
+  if (t < ARCADE_ABSORB_SHATTER_MS) return { name: "shatter", u: t / ARCADE_ABSORB_SHATTER_MS };
+  t -= ARCADE_ABSORB_SHATTER_MS;
+  if (t < ARCADE_ABSORB_STREAM_MS) return { name: "stream", u: t / ARCADE_ABSORB_STREAM_MS };
+  t -= ARCADE_ABSORB_STREAM_MS;
+  if (t < ARCADE_ABSORB_SPARK_MS) return { name: "vanish", u: Math.min(1, t / ARCADE_ABSORB_SPARK_MS) };
+  return { name: "hud", u: 1 };
+}
+function arcadeHash01(n, salt) {
+  const x = Math.sin((n + 1) * 127.1 + (salt + 1) * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+function makeArcadeAbsorbShards() {
+  const n = ARCADE_ABSORB_SHARD_N;
+  const shards = [];
+  for (let i = 0; i < n; i++) {
+    const a0 = (i / n) * Math.PI * 2 + arcadeHash01(i, 1) * 0.16;
+    const wedge = (Math.PI * 2 / n) * (0.82 + arcadeHash01(i, 2) * 0.38);
+    const rInner = 1.4 + arcadeHash01(i, 3) * 4.2;
+    const rOuter = 16 + arcadeHash01(i, 4) * 8;
+    const raw = [{ x: Math.cos(a0) * rInner, y: Math.sin(a0) * rInner }];
+    const nOut = 3 + (i % 2);
+    for (let v = 0; v < nOut; v++) {
+      const t = nOut <= 1 ? 0 : (v / (nOut - 1)) - 0.5;
+      const va = a0 + t * wedge;
+      const rr = rOuter * (0.70 + arcadeHash01(i, 20 + v) * 0.5);
+      raw.push({ x: Math.cos(va) * rr, y: Math.sin(va) * rr });
+    }
+    let cx = 0, cy = 0;
+    for (const p of raw) { cx += p.x; cy += p.y; }
+    cx /= raw.length;
+    cy /= raw.length;
+    shards.push({
+      i, a0, wedge,
+      restX: cx, restY: cy,
+      burst: 11 + arcadeHash01(i, 5) * 9,
+      spin: (arcadeHash01(i, 6) - 0.5) * 9,
+      rot0: (arcadeHash01(i, 11) - 0.5) * 0.8,
+      delay: (i % 5) * 0.048 + arcadeHash01(i, 7) * 0.03,
+      spread: (arcadeHash01(i, 8) - 0.5) * 22,
+      verts: raw.map(p => ({ x: p.x - cx, y: p.y - cy })),
+      tint: 0.8 + arcadeHash01(i, 9) * 0.3
+    });
+  }
+  return shards;
+}
+/** Live absorb target for every playable (bird / ufo / flytaxi / theme skins).
+ *  Center is the live player entity (`bird.x/y`). drawS matches drawBird(); r matches hit(). */
+function arcadePlayerAbsorbTarget() {
+  const live = (typeof bird !== "undefined" && bird);
+  const x = live ? bird.x : 0;
+  const y = live ? bird.y : 0;
+  let drawS = 96;
+  let r = 22;
+  if (typeof character !== "undefined") {
+    if (character === "flytaxi") { drawS = 66; r = 20; }
+    else if (character === "ufo") { drawS = 74; r = 22; }
+  }
+  return { x, y, r, drawS };
+}
+function arcadeAbsorbFlyPos(pop, bx, by, flyU) {
+  const e = 1 - (1 - flyU) * (1 - flyU);
+  const k = 0.18 * e;
+  return {
+    x: pop.x0 + (bx - pop.x0) * k,
+    y: pop.y0 + (by - pop.y0) * k
+  };
+}
+function arcadeAbsorbEval(pop, now) {
+  // Capture scrub: freeze absorb age so Chrome virtual-time cannot drift stills.
+  if (window.__arcadeCaptureScrub && typeof pop.scrubAge === "number") {
+    pop.t0 = now - pop.scrubAge;
+  }
+  const age = (window.__arcadeCaptureScrub && typeof pop.scrubAge === "number")
+    ? Math.max(0, pop.scrubAge)
+    : Math.max(0, now - pop.t0);
+  const phase = arcadeAbsorbPhaseAt(age);
+  // Live magnet every frame — never lock stream/vanish to contact x0/y0.
+  const tgt = arcadePlayerAbsorbTarget();
+  const bx = tgt.x;
+  const by = tgt.y;
+  const bodyR = tgt.r;
+  // Bird drawS=96 used fade 38; scale the same ratio to the live sprite box.
+  const fadeR = tgt.drawS * (38 / 96);
+  if (pop.bx0 == null) pop.bx0 = bx;
+  if (pop.by0 == null) pop.by0 = by;
+  const trackX = bx - pop.bx0;
+  const trackY = by - pop.by0;
+  const u = phase.u;
+  // Fly toward contact-time player, then slide the whole field with live motion.
+  const flyEnd = arcadeAbsorbFlyPos(pop, pop.bx0, pop.by0, 1);
+  let orbX = flyEnd.x + trackX, orbY = flyEnd.y + trackY;
+  if (phase.name === "approach") {
+    const p = arcadeAbsorbFlyPos(pop, pop.bx0, pop.by0, u);
+    orbX = p.x + trackX;
+    orbY = p.y + trackY;
+  }
+  const shardsSrc = (pop.shards && pop.shards.length) ? pop.shards : (pop.shards = makeArcadeAbsorbShards());
+  const shards = [];
+  if (phase.name === "shatter" || phase.name === "stream") {
+    const shatterU = phase.name === "shatter" ? u : 1;
+    const burstK = 0.14 + 0.86 * (1 - (1 - shatterU) * (1 - shatterU));
+    for (const s of shardsSrc) {
+      let x = orbX + s.restX + Math.cos(s.a0) * s.burst * burstK;
+      let y = orbY + s.restY + Math.sin(s.a0) * s.burst * burstK;
+      const dBody = Math.hypot(bx - x, by - y);
+      if (dBody < bodyR) {
+        const push = bodyR / (dBody || 1);
+        x = bx + (x - bx) * push;
+        y = by + (y - by) * push;
+      }
+      let rot = s.rot0 + s.spin * shatterU;
+      let scale = 1.0 - 0.08 * burstK;
+      let alpha = 1;
+      if (phase.name === "stream") {
+        const delay = Math.min(0.42, s.delay);
+        const span = Math.max(0.28, 1 - delay);
+        const su = Math.max(0, Math.min(1, (u - delay) / span));
+        const mag = su * su;
+        const dx = bx - x;
+        const dy = by - y;
+        const dist0 = Math.hypot(dx, dy) || 1;
+        const nx = dx / dist0;
+        const ny = dy / dist0;
+        const px = x + (-ny) * s.spread * (1 - mag);
+        const py = y + nx * s.spread * (1 - mag);
+        x = px + (bx - px) * mag;
+        y = py + (by - py) * mag;
+        const dist = Math.hypot(bx - x, by - y);
+        // Shrink with proximity to the live silhouette; gone at / inside the body edge.
+        scale = 0.92 * Math.max(0, Math.min(1, (dist - bodyR) / fadeR));
+        alpha = Math.max(0, 1 - mag * 0.2);
+        rot = s.rot0 + s.spin * (1 + u * 1.35);
+        if (mag >= 0.97 || dist <= bodyR) { scale = 0; alpha = 0; }
+      }
+      shards.push({
+        x, y, rot, scale, alpha,
+        verts: s.verts, restX: s.restX, restY: s.restY,
+        a0: s.a0, wedge: s.wedge, tint: s.tint, i: s.i
+      });
+    }
+  }
+  return {
+    age, phase: phase.name, phaseU: u, bx, by,
+    orbVisible: phase.name === "approach",
+    orbX, orbY,
+    breathe: arcadeBreathe(age),
+    glow: arcadeGlow(age),
+    shards
+  };
+}
+function arcadePerkRgb(color) {
+  let r = 255, g = 180, b = 80;
+  if (typeof color === "string" && color[0] === "#" && color.length >= 7) {
+    r = parseInt(color.slice(1, 3), 16);
+    g = parseInt(color.slice(3, 5), 16);
+    b = parseInt(color.slice(5, 7), 16);
+  }
+  return { r, g, b };
+}
+function drawArcadeAbsorbShards(ev, pop) {
+  if (!ev.shards || !ev.shards.length) return;
+  const img = arcadePerkImgs[pop.id];
+  const hasImg = img && img.complete && img.naturalWidth;
+  const rgb = arcadePerkRgb(pop.color);
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  for (const s of ev.shards) {
+    if (s.scale < 0.03 || s.alpha < 0.03) continue;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rot);
+    ctx.scale(s.scale, s.scale);
+    ctx.globalAlpha = s.alpha;
+    const verts = s.verts;
+    ctx.beginPath();
+    ctx.moveTo(verts[0].x, verts[0].y);
+    for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i].x, verts[i].y);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(" + rgb.r + "," + rgb.g + "," + rgb.b + "," + (0.78 * s.tint) + ")";
+    ctx.fill();
+    if (hasImg) {
+      ctx.save();
+      ctx.clip();
+      ctx.globalAlpha = s.alpha * 0.95;
+      ctx.drawImage(img, -26 - s.restX, -26 - s.restY, 52, 52);
+      ctx.restore();
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.58)";
+    ctx.lineWidth = 1.15;
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawArcadeAbsorbFlash(bx, by, color, vanishU) {
+  const peak = vanishU < 0.28 ? vanishU / 0.28 : Math.max(0, 1 - (vanishU - 0.28) / 0.72);
+  if (peak <= 0) return;
+  ctx.save();
+  ctx.translate(bx, by);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#fff8e8";
+  ctx.globalAlpha = 0.9 * peak;
+  ctx.beginPath();
+  ctx.arc(0, 0, 4.5 * peak, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.55 * peak;
+  ctx.beginPath();
+  ctx.arc(0, 0, 7 * peak, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.4;
+  ctx.lineCap = "round";
+  ctx.globalAlpha = 0.85 * peak;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.4;
+    const inner = 3;
+    const outer = 7 + 5 * peak;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+    ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawArcadeAbsorb(pop, now) {
+  const ev = arcadeAbsorbEval(pop, now);
+  if (ev.orbVisible) {
+    drawArcadeOrbSprite(arcadePerkImgs[pop.id], ev.orbX, ev.orbY, 52, pop.color, ev.glow, ev.breathe);
+  }
+  drawArcadeAbsorbShards(ev, pop);
+  if (ev.phase === "vanish") drawArcadeAbsorbFlash(ev.bx, ev.by, pop.color, ev.phaseU);
+}
+/** World absorb (orb / shards / flash) — call BEFORE drawBird so fragments never cover the player. */
+function drawArcadeAbsorbWorld() {
+  if (!isArcade() || !arcadeOrbPop) return;
+  drawArcadeAbsorb(arcadeOrbPop, performance.now());
+}
+function drawArcadePerks() {
+  if (!isArcade()) return;
+  const now = performance.now();
+  for (const p of arcadePickups) {
+    const t = now - (p.born || now);
+    const breathe = arcadeBreathe(t);
+    const glow = arcadeGlow(t);
+    drawArcadeOrbSprite(arcadePerkImgs[p.id], p.x, p.y, 52, p.color, glow, breathe);
+  }
+  // Active perk HUD: small icons ONLY at top-right (no labels, no top-left)
+  if (arcadeActive || arcadeSpareArmed) {
+    ctx.save();
+    const sz = 26;
+    const gap = 8;
+    let x = W - 18;
+    const y = 40;
+    if (arcadeSpareArmed) {
+      const glow = arcadeGlow(now + 90);
+      const breathe = arcadeBreathe(now + 90);
+      drawArcadeOrbSprite(arcadePerkImgs.spare, x - sz / 2, y, sz, "#50e090", glow, breathe);
+      x -= sz + gap;
+    }
+    if (arcadeActive) {
+      const glow = arcadeGlow(now);
+      const breathe = arcadeBreathe(now);
+      drawArcadeOrbSprite(arcadePerkImgs[arcadeActive.id], x - sz / 2, y, sz, arcadeActive.color, glow, breathe);
+    }
+    ctx.restore();
+  }
+}
+
+/** Fire gate: Arcade + live run + timed MG/laser only. Classic / ghost / spare: no fire. */
+function arcadeCombatCanFire() {
+  return !!(isArcade() && started && alive && arcadeActive && (arcadeActive.id === "mg" || arcadeActive.id === "laser"));
+}
+function arcadeCombatNose() {
+  const tgt = arcadePlayerAbsorbTarget();
+  const forward = (character === "bird") ? 0.20 : 0.36;
+  return { x: bird.x, y: bird.y - tgt.drawS * forward };
+}
+function arcadeFoeCenter(o) {
+  if (o.kind === "flyingcar") return { x: o.x, y: o.y + (o.s || 76) * 0.10 };
+  return { x: o.x, y: o.y };
+}
+function arcadeShotHitsFoe(x, y, r, o) {
+  const c = arcadeFoeCenter(o);
+  return circleHit(x, y, r, c.x, c.y, foeHitR(o));
+}
+function spawnArcadeSpark(x, y, color, heavy) {
+  const n = heavy ? 16 : 12;
+  const spread = heavy ? 9 : 7.2;
+  const bias = heavy ? 1.8 : 1.4;
+  const life0 = heavy ? 26 : 22;
+  const r0 = heavy ? 7 : 5.5;
+  const rSpan = heavy ? 3 : 2.5;
+  for (let i = 0; i < n; i++) {
+    arcadeSparks.push({
+      x, y,
+      vx: (Math.random() - 0.5) * spread,
+      vy: (Math.random() - 0.5) * spread - bias,
+      life: life0 + Math.random() * 10,
+      r: r0 + Math.random() * rSpan,
+      c: color
+    });
+  }
+}
+const ARCADE_MG_CD = 90; // ~11.1 shots/s so dense Arcade packs stay clearable
+function arcadeTryFireMg(now) {
+  if (!arcadeCombatCanFire() || arcadeActive.id !== "mg") return;
+  if (now - arcadeFireAt < ARCADE_MG_CD) return;
+  arcadeFireAt = now;
+  const nose = arcadeCombatNose();
+  const MUZZLE = 2; // 0–4px above nose; first frame on beak, then −Y. No puff/scale.
+  arcadeBullets.push({ x: nose.x, y: nose.y - MUZZLE, vy: -12 });
+}
+window.__arcadeDemoCombatTick = function () {
+  if (!window.__arcadeDemoCombat) return;
+  if (!isArcade() || !started || !alive) return;
+  const which = Number(window.__arcadeDemoCombatPerk || 0) || 0;
+  const d = ARCADE_PERK_DEFS[Math.max(0, Math.min(ARCADE_PERK_DEFS.length - 1, which))];
+  const now = performance.now();
+  if (!arcadeActive || arcadeActive.id !== d.id) {
+    arcadeActive = { id: d.id, label: d.label, color: d.color, until: now + 600000 };
+    arcadeFireAt = 0;
+  } else if (arcadeActive.until < now + 30000) {
+    arcadeActive.until = now + 600000;
+  }
+  arcadeTryFireMg(now);
+};
+function tickArcadeCombat(dt) {
+  if (!isArcade() || !started || !alive) return;
+  if (window.__arcadeCaptureScrub) return;
+  if (window.__arcadeDemoCombat) window.__arcadeDemoCombatTick();
+  const now = performance.now();
+  if (window.__arcadeDemoFormation && arcadeActive && arcadeActive.until < now + 30000) {
+    arcadeActive.until = now + 600000;
+  }
+  arcadeTryFireMg(now);
+  const k = dt / 16;
+  for (let i = arcadeBullets.length - 1; i >= 0; i--) {
+    const b = arcadeBullets[i];
+    b.y += b.vy * k;
+    if (b.y < -20) {
+      arcadeBullets.splice(i, 1);
+      continue;
+    }
+    for (let j = obstacles.length - 1; j >= 0; j--) {
+      const o = obstacles[j];
+      if (!arcadeShotHitsFoe(b.x, b.y, 8, o)) continue;
+      o.arcadeHits = (o.arcadeHits || 0) + 1;
+      spawnArcadeSpark(b.x, b.y, "#f0a020");
+      arcadeBullets.splice(i, 1);
+      if (o.arcadeHits >= 2) arcadeKillFoe(o);
+      else {
+        o.arcadeHitFlash = 14; // longer, readable flash window
+        if (theme === "sky" || theme === "night") {
+          o.arcadeFlame = 0; // NEVER fireball on Sky/Night
+          if (o.kind === "plane") {
+            o.arcadeCrinkle = 1; // living-foe crinkle; stays in obstacles
+            o.arcadeCrinkleT = 0;
+          }
+          // bird: flash only (arcadeHitFlash); damage via arcadeHits
+        } else {
+          o.arcadeFlame = 1; // other themes → smoke + slight fire trail
+          o.arcadeSmokeT = 0;
+        }
+      }
+      break;
+    }
+  }
+  if (arcadeCombatCanFire() && arcadeActive.id === "laser") {
+    const nose = arcadeCombatNose();
+    const halfW = 7;
+    for (let j = obstacles.length - 1; j >= 0; j--) {
+      const o = obstacles[j];
+      const c = arcadeFoeCenter(o);
+      const r = foeHitR(o);
+      if (c.x + r < nose.x - halfW || c.x - r > nose.x + halfW) continue;
+      if (c.y + r < -20 || c.y - r > nose.y) continue;
+      spawnArcadeSpark(c.x, c.y, "#e8fbff", true);
+      arcadeKillFoe(o);
+    }
+  }
+  for (let j = 0; j < obstacles.length; j++) {
+    const o = obstacles[j];
+    if (o.arcadeHitFlash > 0) o.arcadeHitFlash -= k;
+    if (o.arcadeCrinkle) o.arcadeCrinkleT = (o.arcadeCrinkleT || 0) + k;
+    if (o.arcadeFlame) o.arcadeSmokeT = (o.arcadeSmokeT || 0) + k;
+  }
+  for (let i = arcadeSparks.length - 1; i >= 0; i--) {
+    const s = arcadeSparks[i];
+    s.x += s.vx * k;
+    s.y += s.vy * k;
+    s.life -= k;
+    if (s.life <= 0) arcadeSparks.splice(i, 1);
+  }
+}
+function arcadeFireStyle() {
+  if (character === "bird" && theme === "sky") return "sketch-sky";
+  if (character === "bird" && theme === "night") return "sketch-night";
+  return "neon"; // Space/Future/UFO/Fly Taxi / any non-bird
+}
+// SPRITE_SWAP_HOOK — Vibe A Neon Glow MG (mg-bullet-vibe-a). Tip +X; rotate −90° so tip leads −Y.
+function drawArcadeMgBullet(b) {
+  const style = arcadeFireStyle();
+  const sketch = style === "sketch-sky" || style === "sketch-night";
+  const img = sketch ? arcadeMgBulletSketchImg : arcadeMgBulletImg;
+  const s = 24;
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(-Math.PI / 2);
+  ctx.globalCompositeOperation = "source-over";
+  const halo = ctx.createRadialGradient(0, 0, 1, 0, 0, s * 0.62);
+  if (sketch) {
+    halo.addColorStop(0, "rgba(32,28,24,0.28)");
+    halo.addColorStop(0.55, "rgba(32,28,24,0.10)");
+    halo.addColorStop(1, "rgba(32,28,24,0)");
+  } else {
+    halo.addColorStop(0, "rgba(255,176,48,0.42)");
+    halo.addColorStop(0.55, "rgba(240,160,32,0.16)");
+    halo.addColorStop(1, "rgba(240,160,32,0)");
+  }
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(0, 0, s * 0.62, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(0, 0, s * 0.46, s * 0.30, 0, 0, Math.PI * 2);
+  ctx.clip();
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, -s / 2, -s / 2, s, s);
+  } else {
+    ctx.fillStyle = sketch ? "#201c18" : "#f0a020";
+    ctx.beginPath();
+    ctx.arc(2, 0, s * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+// SPRITE_SWAP_HOOK — Vibe A Neon Glow laser (laser-bolt-vibe-a), cyan. Tip +X; rotate −90° so tip leads −Y.
+function drawArcadeLaserBeam() {
+  const style = arcadeFireStyle();
+  const sketch = style === "sketch-sky" || style === "sketch-night";
+  const img = style === "sketch-night" ? arcadeLaserBoltSketchNightImg
+    : (style === "sketch-sky" ? arcadeLaserBoltSketchImg : arcadeLaserBoltImg);
+  const nose = arcadeCombatNose();
+  const len = Math.max(8, nose.y + 24);
+  const w = 14;
+  ctx.save();
+  ctx.translate(nose.x, nose.y);
+  ctx.rotate(-Math.PI / 2);
+  ctx.globalCompositeOperation = "source-over";
+  const pulse = 0.55 + 0.45 * arcadePulse01(performance.now());
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = sketch
+    ? (style === "sketch-night" ? "rgba(230,211,176,0.30)" : "rgba(32,28,24,0.14)")
+    : "rgba(64,224,255,0.22)";
+  ctx.beginPath();
+  ctx.roundRect(0, -w * 0.9, len, w * 1.8, w * 0.9);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.roundRect(0, -w / 2, len, w, w / 2);
+  ctx.clip();
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, 0, -w / 2, len, w);
+  } else {
+    ctx.fillStyle = sketch
+      ? (style === "sketch-night" ? "rgba(230,211,176,0.95)" : "rgba(32,28,24,0.90)")
+      : "rgba(64,224,255,0.95)";
+    ctx.fillRect(0, -w * 0.22, len, w * 0.44);
+  }
+  ctx.restore();
+}
+function drawArcadeCombat() {
+  if (!isArcade()) return;
+  if (window.__arcadeCaptureScrub) return;
+  for (const b of arcadeBullets) drawArcadeMgBullet(b);
+  if (arcadeCombatCanFire() && arcadeActive.id === "laser") drawArcadeLaserBeam();
+  for (const s of arcadeSparks) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, s.life / 10));
+    const r = s.r || 6;
+    ctx.fillStyle = s.c;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r * 0.45, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+/** Arcade foe destroy style. Paper = Sky/Night bird & plane. FX is draw-only. */
+function arcadeFoeDeathStyle(o) {
+  const k = o && o.kind;
+  if (k === "bird" || k === "plane") return "paper";
+  if (k === "foe" || k === "airplane" || k === "flyingcar") return "explode";
+  if (k === "meteor") return "crack";
+  return "explode";
+}
+function arcadePlayerDeathStyle() {
+  if (character === "ufo" || character === "flytaxi") return "explode";
+  return "paper";
+}
+function arcadePushDeathFx(fx) {
+  const overflow = arcadeDeathFx.length - (ARCADE_DEATH_FX_CAP - 1);
+  if (overflow > 0) arcadeDeathFx.splice(0, overflow);
+  arcadeDeathFx.push(fx);
+}
+function makeArcadeExplodeBits(x, y) {
+  const bits = new Array(10);
+  for (let i = 0; i < 10; i++) {
+    const a = (Math.PI * 2 * i) / 10 + 0.45;
+    const sp = 4.2 + (i % 3) * 1.4;
+    bits[i] = {
+      x: x,
+      y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp * 0.65 + 2.8, // +Y bias: debris falls out of the sky
+      r: 5.5 + (i % 3) * 1.6
+    };
+  }
+  return bits;
+}
+function makeArcadeCrackPieces(x, y, s) {
+  const n = 3 + (Math.abs(Math.floor(x * 3 + y)) % 3);
+  const pieces = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = (Math.PI * 2 * i) / n + 0.4;
+    const sp = 1.55 + (i % 3) * 0.6;
+    const sz = Math.max(8, s * (0.15 + (i % 3) * 0.03));
+    const skew = i % 2 ? 0.7 : 1;
+    pieces[i] = {
+      x: x,
+      y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp + 0.65,
+      rot: a,
+      spin: i % 2 ? 0.09 : -0.075,
+      ax: -sz * skew,
+      ay: sz * 0.42,
+      bx: sz * 0.18,
+      by: -sz * (0.72 + (i % 3) * 0.1),
+      cx: sz,
+      cy: sz * 0.48
+    };
+  }
+  return pieces;
+}
+function makeArcadeDeathFx(style, x, y, src) {
+  const s = (src && src.s) || 64;
+  const fx = {
+    style: style,
+    kind: (src && src.kind) || "bird",
+    x: x,
+    y: y,
+    s: s,
+    vy: ((src && src.vy) || 3) + 1.5,
+    rot: 0,
+    wobble: 0.16 + (Math.abs(x) % 7) * 0.02,
+    crinkle: Math.abs(x) % 5,
+    scale: 1,
+    age: 0,
+    dur: style === "explode" ? 22 : (style === "crack" ? 26 : 34),
+    bits: null,
+    pieces: null
+  };
+  if (style === "explode") fx.bits = makeArcadeExplodeBits(x, y);
+  else if (style === "crack") fx.pieces = makeArcadeCrackPieces(x, y, s);
+  return fx;
+}
+function makeArcadePlayerDeathFx() {
+  const kind = character === "flytaxi" ? "flyingcar" : (character === "ufo" ? "foe" : "bird");
+  return makeArcadeDeathFx(arcadePlayerDeathStyle(), bird.x, bird.y, { kind: kind, s: 72, vy: 0.4 });
+}
+/** Collider leaves obstacles first. The FX record is never passed to hit(). */
+function arcadeKillFoe(o) {
+  if (!isArcade() || !o) return;
+  const idx = obstacles.indexOf(o);
+  if (idx < 0) return;
+  obstacles.splice(idx, 1);
+  const c = arcadeFoeCenter(o);
+  arcadePushDeathFx(makeArcadeDeathFx(arcadeFoeDeathStyle(o), c.x, c.y, o));
+}
+function stepArcadeDeathFx(fx, k) {
+  if (fx.style === "paper") {
+    fx.y += fx.vy * k;
+    fx.vy += 0.28 * k;
+    fx.rot += fx.wobble * k;
+    fx.crinkle += 0.55 * k;
+    const u = fx.dur > 0 ? fx.age / fx.dur : 1;
+    fx.scale = u >= 1 ? 0.16 : (1 - u * 0.84);
+    return;
+  }
+  if (fx.style === "explode" && fx.bits) {
+    const bits = fx.bits;
+    for (let i = 0; i < bits.length; i++) {
+      const b = bits[i];
+      b.x += b.vx * k;
+      b.y += b.vy * k;
+      b.vy += 0.18 * k; // fall, not radial float
+    }
+    return;
+  }
+  if (fx.style === "crack" && fx.pieces) {
+    const pcs = fx.pieces;
+    for (let i = 0; i < pcs.length; i++) {
+      const p = pcs[i];
+      p.x += p.vx * k;
+      p.y += p.vy * k;
+      p.vy += 0.14 * k;
+      p.rot += p.spin * k;
+    }
+  }
+}
+function tickArcadeDeathFx(dt) {
+  if (!isArcade()) return;
+  const k = dt / 16;
+  for (let i = arcadeDeathFx.length - 1; i >= 0; i--) {
+    const fx = arcadeDeathFx[i];
+    fx.age += k;
+    stepArcadeDeathFx(fx, k);
+    if (fx.age >= fx.dur) arcadeDeathFx.splice(i, 1);
+  }
+  if (playerDeathFx) {
+    playerDeathFx.age += k;
+    stepArcadeDeathFx(playerDeathFx, k);
+    if (playerDeathFx.age >= playerDeathFx.dur) playerDeathFx = null;
+  }
+}
+function drawArcadePaperDeath(fx) {
+  const u = fx.dur > 0 ? fx.age / fx.dur : 1;
+  const fade = u >= 1 ? 0 : (1 - u);
+  const wob = Math.sin(fx.crinkle);
+  const squash = 0.72 + 0.28 * Math.cos(fx.crinkle * 1.7);
+  ctx.save();
+  ctx.translate(fx.x, fx.y);
+  ctx.rotate(fx.rot * 0.22 + wob * 0.42);
+  ctx.scale(fx.scale, fx.scale * squash);
+  ctx.globalAlpha = fade;
+  ctx.strokeStyle = isDarkTheme() ? cream : "#1a1a1a";
+  ctx.fillStyle = isDarkTheme() ? "rgba(230,211,176,0.2)" : "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  if (fx.kind === "plane") {
+    ctx.moveTo(0, 18);
+    ctx.lineTo(-20, -14);
+    ctx.lineTo(0, -4);
+    ctx.lineTo(20, -14);
+    ctx.closePath();
+  } else {
+    const lift = 8 * wob;
+    ctx.moveTo(-28, 8);
+    ctx.quadraticCurveTo(-14, -lift, -2, 3);
+    ctx.quadraticCurveTo(12, -lift - 6, 28, 7);
+    ctx.quadraticCurveTo(8, 14 + wob * 4, -28, 8);
+    ctx.closePath();
+  }
+  ctx.fill();
+  ctx.stroke();
+  ctx.globalAlpha = fade * 0.85;
+  ctx.beginPath();
+  ctx.moveTo(-10 * wob, -6);
+  ctx.lineTo(8, 4 + wob * 6);
+  ctx.lineTo(-4, 10);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawArcadeExplodeDeath(fx) {
+  const u = fx.dur > 0 ? fx.age / fx.dur : 1;
+  const bits = fx.bits;
+  ctx.save();
+  if (u < 0.50) {
+    const flash = 1 - u / 0.50;
+    const rad = fx.s * 0.85 * flash;
+    ctx.globalAlpha = flash;
+    ctx.fillStyle = "#ffe08a";
+    ctx.beginPath();
+    ctx.arc(fx.x, fx.y, rad, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#ff4a1a";
+    ctx.beginPath();
+    ctx.arc(fx.x, fx.y, rad * 0.48, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#fffaf0";
+    ctx.beginPath();
+    ctx.arc(fx.x, fx.y, rad * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (bits) {
+    ctx.globalAlpha = u >= 1 ? 0 : (1 - u);
+    for (let i = 0; i < bits.length; i++) {
+      const b = bits[i];
+      ctx.fillStyle = (i & 1) ? "#ffd84a" : "#ff6a1a";
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+function drawArcadeCrackDeath(fx) {
+  const pcs = fx.pieces;
+  if (!pcs) return;
+  const u = fx.dur > 0 ? fx.age / fx.dur : 1;
+  const dark = isDarkTheme();
+  ctx.save();
+  ctx.globalAlpha = u >= 1 ? 0 : (1 - u);
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = "round";
+  for (let i = 0; i < pcs.length; i++) {
+    const p = pcs[i];
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = (i & 1) ? "#6e4630" : "#8a5a3a";
+    ctx.strokeStyle = dark ? cream : "#1a1a1a";
+    ctx.beginPath();
+    ctx.moveTo(p.ax, p.ay);
+    ctx.lineTo(p.bx, p.by);
+    ctx.lineTo(p.cx, p.cy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p.ax * 0.2, p.ay * 0.15);
+    ctx.lineTo(p.cx * 0.35, p.cy * 0.25);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawOneArcadeDeathFx(fx) {
+  if (fx.age <= 8) {
+    const t = fx.age / 8;
+    ctx.save();
+    ctx.globalAlpha = 0.90 * (1 - t);
+    ctx.fillStyle = "#fff6d0";
+    ctx.beginPath();
+    ctx.arc(fx.x, fx.y, fx.s * (0.50 + 0.25 * t), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  if (fx.style === "paper") drawArcadePaperDeath(fx);
+  else if (fx.style === "explode") drawArcadeExplodeDeath(fx);
+  else if (fx.style === "crack") drawArcadeCrackDeath(fx);
+}
+function drawArcadeFoeDeathFx() {
+  if (!isArcade()) return;
+  for (let i = 0; i < arcadeDeathFx.length; i++) drawOneArcadeDeathFx(arcadeDeathFx[i]);
+}
+function drawArcadePlayerDeathFx() {
+  if (!isArcade() || !playerDeathFx) return;
+  drawOneArcadeDeathFx(playerDeathFx);
+}
+/** Hit1 damage read for non-Sky/Night: smoke + thin fire trail. Extent ≤ ~s*0.28. Not a fireball. */
+function drawArcadeHitDamage(o) {
+  const s = o.s || 64;
+  const c = arcadeFoeCenter(o); // flyingcar: thruster-biased cabin, y + 0.10s
+  const x = c.x;
+  const y = c.y;
+  const cap = s * 0.28;
+  const t = (o.arcadeSmokeT || 0) + performance.now() * 0.006;
+  ctx.save();
+  for (let i = 0; i < 4; i++) {
+    const phase = t * 0.85 + i * 1.41;
+    const flick = 0.5 + 0.5 * Math.sin(phase);
+    const puffR = s * (0.08 + 0.06 * flick); // s*0.08–0.14
+    const spread = Math.sin(phase * 1.3 + i) * s * 0.04;
+    const maxOff = Math.max(0, cap - puffR - Math.abs(spread));
+    const band = (i + 0.5) / 4;
+    const drift = band * maxOff * (0.75 + 0.25 * flick); // up, behind a descending foe
+    const a = 0.28 + 0.30 * flick;
+    ctx.fillStyle = "rgba(186,186,194," + a.toFixed(3) + ")";
+    ctx.beginPath();
+    ctx.arc(x + spread, y - drift, puffR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const u = 0.5 + 0.5 * Math.sin(t * 1.7);
+  const trailW = s * (0.03 + 0.02 * u); // radiusX; full width s*0.06–0.10
+  const trailCy = y - s * 0.08;
+  const trailRy = Math.min(s * 0.11, Math.max(s * 0.04, cap - s * 0.08));
+  ctx.globalAlpha = 0.88;
+  ctx.fillStyle = "#ff6a1a";
+  ctx.beginPath();
+  ctx.ellipse(x, trailCy, trailW, trailRy, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = "#ffd24a";
+  ctx.beginPath();
+  ctx.ellipse(x, trailCy + trailRy * 0.22, trailW * 0.48, trailRy * 0.48, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+function drawArcadeHitFlame(o) {
+  drawArcadeHitDamage(o);
+}
+/** Sky/Night bird hit1: body-sized white/cream flash. Not a fireball. */
+function drawArcadeHurtFlash(o) {
+  if (!isArcade() || !(o.arcadeHitFlash > 0)) return;
+  if (o.kind !== "bird") return;
+  if (theme !== "sky" && theme !== "night") return;
+  const s = o.s || 64;
+  const u = Math.max(0, Math.min(1, o.arcadeHitFlash / 14));
+  const rad = s * 0.35;
+  const rgb = theme === "night" ? "230,211,176" : "255,250,240";
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  const g = ctx.createRadialGradient(o.x, o.y, rad * 0.12, o.x, o.y, rad);
+  g.addColorStop(0, "rgba(" + rgb + "," + (0.75 * u).toFixed(3) + ")");
+  g.addColorStop(1, "rgba(" + rgb + ",0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(o.x, o.y, rad, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 let pointer = false;
 let bits = [];
 let cheer = null;
@@ -171,6 +1268,14 @@ function layoutSpace() {
     });
   }
 }
+let futureTileH = 0;
+function layoutFuture() {
+  if (!W) return;
+  const img = futureBackdropImg;
+  if (img && img.naturalWidth) {
+    futureTileH = img.naturalHeight * (W / img.naturalWidth);
+  }
+}
 
 function reset() {
   bird.x = W * 0.5;
@@ -188,11 +1293,61 @@ function reset() {
   continued = false;
   safe = 0;
   countedThisDeath = false;
+  lastHole = 0.5;
+  lastGapW = 0;
+  futureGapPhase = "weave";
+  futureGapPhaseLeft = 3 + Math.floor(Math.random() * 4);
+  resetArcadeRunState();
 }
 
+let taxiDx = 0;
+let taxiBank = 0;
+let taxiLastX = null;
+let taxiThrust = 0;
+function noteTaxiDx(nx) {
+  if (taxiLastX == null) taxiLastX = nx;
+  const raw = nx - taxiLastX;
+  taxiLastX = nx;
+  taxiDx = taxiDx * 0.55 + raw * 0.45;
+  const enter = 2.4;
+  const hold = 0.9;
+  if (taxiBank === 0) {
+    if (taxiDx <= -enter) taxiBank = -1;
+    else if (taxiDx >= enter) taxiBank = 1;
+  } else if (taxiBank < 0) {
+    if (taxiDx >= hold) taxiBank = taxiDx >= enter ? 1 : 0;
+  } else if (taxiDx <= -hold) {
+    taxiBank = taxiDx <= -enter ? -1 : 0;
+  }
+  if (Math.abs(taxiDx) >= 7) taxiThrust = 10;
+}
 function setX(clientX) {
   const rect = canvas.getBoundingClientRect();
-  bird.x = Math.max(40, Math.min(W - 40, clientX - rect.left));
+  const nx = Math.max(40, Math.min(W - 40, clientX - rect.left));
+  noteTaxiDx(nx);
+  bird.x = nx;
+}
+/** Arcade stick-style grab: offset from bird at pointerdown. Null = no grab. */
+let arcadeGrabOffX = null;
+let arcadeGrabOffY = null;
+function beginArcadeGrab(touchX, touchY) {
+  arcadeGrabOffX = touchX - bird.x;
+  arcadeGrabOffY = touchY - bird.y;
+}
+function applyArcadeDrag(touchX, touchY) {
+  if (arcadeGrabOffX == null || arcadeGrabOffY == null) {
+    beginArcadeGrab(touchX, touchY);
+    return;
+  }
+  const nx = Math.max(40, Math.min(W - 40, touchX - arcadeGrabOffX));
+  const ny = Math.max(40, Math.min(H - 40, touchY - arcadeGrabOffY));
+  noteTaxiDx(nx);
+  bird.x = nx;
+  bird.y = ny;
+}
+function clearArcadeGrab() {
+  arcadeGrabOffX = null;
+  arcadeGrabOffY = null;
 }
 
 function localPoint(e) {
@@ -204,24 +1359,40 @@ let optionOpen = "";
 const PRODUCTS = {
   night: "com.playflyby.game.theme.night",
   space: "com.playflyby.game.theme.space",
+  future: "com.playflyby.game.theme.future",
   ufo: "com.playflyby.game.character.ufo",
+  flytaxi: "com.playflyby.game.character.flytaxi",
   spaceufo: "com.playflyby.game.bundle.spaceufo",
+  futureflytaxi: "com.playflyby.game.bundle.futureflytaxi",
   adfree: "com.playflyby.game.adfree",
   upgrade_ufo: "com.playflyby.game.upgrade.ufo",
-  upgrade_space: "com.playflyby.game.upgrade.space"
+  upgrade_space: "com.playflyby.game.upgrade.space",
+  upgrade_flytaxi: "com.playflyby.game.upgrade.flytaxi",
+  upgrade_future: "com.playflyby.game.upgrade.future"
 };
-// LAB ONLY (playflyby.com/lab): unlock paid themes/characters free for Android/browser tests.
-// Do not copy this owns() into the App Store binary.
+function grantPlaytestFuture() {
+  if (localStorage.getItem("flyby-playtest-future-v1") === "1") return;
+  localStorage.setItem("flyby-own-future", "1");
+  localStorage.setItem("flyby-own-flytaxi", "1");
+  localStorage.setItem("flyby-playtest-future-v1", "1");
+}
+grantPlaytestFuture();
 function owns(id) {
   if (id === "sky" || id === "bird") return true;
-  if (id === "night" || id === "space" || id === "ufo" || id === "adfree") return true;
-  if (id === "spaceufo" || id === "upgrade_ufo" || id === "upgrade_space") return true;
+  if (id === "spaceufo") return owns("space") && owns("ufo");
+  if (id === "futureflytaxi") return owns("future") && owns("flytaxi");
   return localStorage.getItem("flyby-own-" + id) === "1";
 }
 function chromeColorForTheme(id) {
   const th = themeById(id);
   if (id === "night") return th.top || "#12182a";
   if (id === "space") return th.top || "#05060a";
+  if (id === "future") return th.top || "#0b0618";
+  return "#b7e4f6";
+}
+function panelBg() {
+  if (theme === "future") return "#0b0618";
+  if (theme === "night" || theme === "space") return "#05060a";
   return "#b7e4f6";
 }
 function syncChrome() {
@@ -235,7 +1406,8 @@ function syncChrome() {
 function applyTheme(id) {
   if (id === "night" && !owns("night")) id = "sky";
   if (id === "space" && !owns("space")) id = "sky";
-  if (id !== "sky" && id !== "night" && id !== "space") id = "sky";
+  if (id === "future" && !owns("future")) id = "sky";
+  if (id !== "sky" && id !== "night" && id !== "space" && id !== "future") id = "sky";
   theme = id;
   localStorage.setItem("flyby-theme", theme);
   syncChrome();
@@ -243,13 +1415,20 @@ function applyTheme(id) {
     planets = [];
     layoutSpace();
   }
+  if (theme === "future") layoutFuture();
 }
 function applyCharacter(id) {
   if (id === "ufo" && !owns("ufo")) id = "bird";
-  if (id !== "bird" && id !== "ufo") id = "bird";
+  if (id === "flytaxi" && !owns("flytaxi")) id = "bird";
+  if (id !== "bird" && id !== "ufo" && id !== "flytaxi") id = "bird";
   character = id;
   localStorage.setItem("flyby-character", character);
 }
+function setViewMode(_id) {
+  viewMode = "2d";
+  try { localStorage.setItem("flyby-view-mode", "2d"); } catch (err) {}
+}
+function viewModeIs3D() { return false; }
 function flybyCall(action, extra) {
   const msg = Object.assign({ action: action }, extra || {});
   try {
@@ -258,12 +1437,63 @@ function flybyCall(action, extra) {
   } catch (err) {}
   return false;
 }
+let gcState = { authenticated: false, playerName: "", status: "unknown" };
+let lbState = { entries: [], localBest: 0, playerRank: null, playerScore: null, loading: false, signedIn: false, message: "", status: "" };
+let ranksReturn = "menu";
+let ranksScroll = 0;
+let ranksPointerLastY = null;
+function localBestScore() {
+  const stored = Number(localStorage.getItem("flyby-best") || 0);
+  return Math.max(0, Math.floor(Number.isFinite(best) ? Math.max(best, stored) : stored));
+}
+function openRanks(from) {
+  ranksReturn = from === "options" ? "options" : "menu";
+  panel = "ranks";
+  ranksScroll = 0;
+  ranksPointerLastY = null;
+  requestLeaderboard();
+}
+function requestLeaderboard() {
+  lbState.loading = true;
+  lbState.localBest = localBestScore();
+  flybyCall("leaderboardData", { best: lbState.localBest, score: Math.floor(dist) });
+}
+window.flybyGameCenter = function (state) {
+  if (!state) return;
+  const was = gcState.authenticated;
+  gcState.authenticated = !!state.authenticated;
+  gcState.playerName = state.playerName || "";
+  gcState.status = state.status || (gcState.authenticated ? "authenticated" : "unavailable");
+  if (window.flybyHost) {
+    window.flybyHost.gameCenter = {
+      authenticated: gcState.authenticated,
+      playerName: gcState.playerName
+    };
+  }
+  if (panel === "ranks" && !was && gcState.authenticated) requestLeaderboard();
+};
+window.flybyLeaderboard = function (data) {
+  if (!data) return;
+  lbState.loading = false;
+  lbState.signedIn = !!data.authenticated;
+  lbState.entries = Array.isArray(data.entries) ? data.entries : [];
+  lbState.playerRank = data.playerRank || null;
+  lbState.playerScore = data.playerScore || null;
+  lbState.message = data.message || "";
+  lbState.status = data.status || "";
+  if (typeof data.localBest === "number") lbState.localBest = data.localBest;
+  else lbState.localBest = localBestScore();
+  ranksScroll = 0;
+};
 window.flybyOwned = function (state) {
   if (!state) return;
   if (state.night) localStorage.setItem("flyby-own-night", "1");
   if (state.space || state.spaceufo) localStorage.setItem("flyby-own-space", "1");
   if (state.ufo || state.spaceufo) localStorage.setItem("flyby-own-ufo", "1");
+  if (state.future || state.futureflytaxi) localStorage.setItem("flyby-own-future", "1");
+  if (state.flytaxi || state.futureflytaxi) localStorage.setItem("flyby-own-flytaxi", "1");
   if (state.adfree) localStorage.setItem("flyby-own-adfree", "1");
+  grantPlaytestFuture();
   // Re-apply saved prefs only — never force a theme/character or gate one by the other.
   applyTheme(localStorage.getItem("flyby-theme") || theme);
   applyCharacter(localStorage.getItem("flyby-character") || character);
@@ -280,34 +1510,42 @@ function grantAfterAd() {
   saveAdCycle();
 }
 window.flybyReward = function (result) {
+  // After rewarded continue ad ends, stay on death "again" frame.
+  // Credit is granted so the next tap on again is a free continue (no second ad).
   if (result === "viewed") {
     adGrace = 3;
     freeLeft = 0;
     saveAdCycle();
-    reset();
+    showBuyToast("Ready — tap again");
     return;
   }
   if (result === "none" || result === "skipped") {
     adGrace = 0;
     grantAfterAd();
-    reset();
+    showBuyToast("Ready — tap again");
   }
 };
 let theme = localStorage.getItem("flyby-theme") || "sky";
 if (theme === "night" && !owns("night")) theme = "sky";
 if (theme === "space" && !owns("space")) theme = "sky";
-if (theme !== "sky" && theme !== "night" && theme !== "space") theme = "sky";
+if (theme === "future" && !owns("future")) theme = "sky";
+if (theme !== "sky" && theme !== "night" && theme !== "space" && theme !== "future") theme = "sky";
 let character = localStorage.getItem("flyby-character") || "bird";
 if (character === "ufo" && !owns("ufo")) character = "bird";
-if (character !== "bird" && character !== "ufo") character = "bird";
+if (character === "flytaxi" && !owns("flytaxi")) character = "bird";
+if (character !== "bird" && character !== "ufo" && character !== "flytaxi") character = "bird";
+let viewMode = "2d";
+try { localStorage.setItem("flyby-view-mode", "2d"); } catch (err) {}
 const themes = [
   { id: "sky", name: "sky", top: "#d9f3ff", mid: "#bfe6f8", bot: "#9ed4ef", ink: "#1a1a1a", night: false },
   { id: "night", name: "night", top: "#12182a", mid: "#1a2740", bot: "#0c101c", ink: "#e6d3b0", night: true },
-  { id: "space", name: "space", top: "#05060a", mid: "#0a0c14", bot: "#020308", ink: "#e6d3b0", space: true }
+  { id: "space", name: "space", top: "#05060a", mid: "#0a0c14", bot: "#020308", ink: "#e6d3b0", space: true },
+  { id: "future", name: "future", top: "#0b0618", mid: "#120a28", bot: "#070412", ink: "#e6d3b0", future: true }
 ];
 const CHARACTERS = [
   { id: "bird", name: "bird" },
-  { id: "ufo", name: "ufo" }
+  { id: "ufo", name: "ufo" },
+  { id: "flytaxi", name: "Fly Taxi" }
 ];
 syncChrome();
 let stars = [];
@@ -344,8 +1582,13 @@ function startBox() {
 }
 function menuBtn(i) {
   const w = Math.min(200, W - 64);
-  const h = 46;
-  return { x: W / 2 - w / 2, y: H * 0.46 + 66 + i * 56, w, h };
+  const h = 50;
+  return { x: W / 2 - w / 2, y: H * 0.46 + 60 + i * 56, w, h };
+}
+function ranksCornerBox() {
+  const edge = 18;
+  const size = 44;
+  return { x: edge, y: H - size - edge, w: size, h: size };
 }
 function hitBox(b, x, y) {
   return x >= b.x - 8 && x <= b.x + b.w + 8 && y >= b.y - 8 && y <= b.y + b.h + 8;
@@ -355,6 +1598,7 @@ function toMenu() {
   started = false;
   alive = true;
   pointer = false;
+  clearArcadeGrab();
   obstacles = [];
   panel = "menu";
 }
@@ -410,6 +1654,9 @@ function freeAgain() {
 }
 function noteDeath() {
   countedThisDeath = true;
+  const run = Math.floor(dist);
+  const localBest = localBestScore();
+  flybyCall("submitScore", { score: run, best: localBest });
 }
 function takeFreeContinue() {
   if (owns("adfree")) { reset(); return; }
@@ -428,8 +1675,9 @@ function takeFreeContinue() {
 function useContinue() {
   if (freeAgain()) { takeFreeContinue(); return; }
   if (!flybyCall("rewarded")) {
+    // No-fill: grant free-batch credit, stay on death for next again tap.
     grantAfterAd();
-    reset();
+    showBuyToast("Ready — tap again");
   }
 }
 function spaceUfoOffer() {
@@ -440,26 +1688,43 @@ function spaceUfoOffer() {
   if (hasSpace && !hasUfo) return { product: "upgrade_ufo", label: "buy", name: "Complete Set" };
   return { product: "upgrade_space", label: "buy", name: "Complete Set" };
 }
+function futureFlyTaxiOffer() {
+  const hasFuture = owns("future");
+  const hasTaxi = owns("flytaxi");
+  if (hasFuture && hasTaxi) return { product: null, label: "owned", name: "Future + Fly Taxi" };
+  if (!hasFuture && !hasTaxi) return { product: "futureflytaxi", label: "buy", name: "Future + Fly Taxi" };
+  if (hasFuture && !hasTaxi) return { product: "upgrade_flytaxi", label: "buy", name: "Complete Set" };
+  return { product: "upgrade_future", label: "buy", name: "Complete Set" };
+}
+function bundleOffer(id) {
+  return id === "futureflytaxi" ? futureFlyTaxiOffer() : spaceUfoOffer();
+}
 function storeItems() {
   return [
     { id: "theme", label: "Theme", sub: "open" },
     { id: "characters", label: "Characters", sub: "open" },
-    { id: "bundles", label: "Bundles", sub: owns("spaceufo") ? "owned" : "open" },
+    { id: "bundles", label: "Bundles", sub: (owns("spaceufo") && owns("futureflytaxi")) ? "owned" : "open" },
     { id: "adfree", label: "No Ads", sub: owns("adfree") ? "owned" : "buy" }
   ];
 }
 const BUNDLES = [
-  { id: "spaceufo", name: "Space + UFO", themes: ["space"], characters: ["ufo"], priceHint: "bundle" }
+  { id: "spaceufo", name: "Space + UFO", themes: ["space"], characters: ["ufo"], priceHint: "bundle" },
+  { id: "futureflytaxi", name: "Future + Fly Taxi", themes: ["future"], characters: ["flytaxi"], priceHint: "bundle" }
 ];
 function ownedThemes() {
   return themes.filter(th => th.id === "sky" || owns(th.id));
 }
+function reengageTestAvailable() {
+  return !!(window.flybyHost && window.flybyHost.reengageTestAvailable === true);
+}
 function optionSections() {
-  return [
+  const secs = [
     { id: "theme", label: "Theme" },
     { id: "characters", label: "Characters" },
     { id: "bundles", label: "Bundles" }
   ];
+  if (reengageTestAvailable()) secs.push({ id: "debug", label: "Debug" });
+  return secs;
 }
 function optionChildren(id) {
   if (id === "theme") {
@@ -498,6 +1763,9 @@ function optionChildren(id) {
     });
     return list.length ? list : [{ id: "soon", name: "coming soon", action: "none" }];
   }
+  if (id === "debug") {
+    return [{ id: "testReengage", name: "Test reminder in 15s", action: "testReengage" }];
+  }
   const owned = BUNDLES.filter(b => owns(b.id));
   return owned.length
     ? owned.map(b => ({ id: b.id, name: b.name, action: "none" }))
@@ -508,6 +1776,14 @@ function optionLayout() {
   const w = Math.min(280, W - 40);
   const x = W / 2 - w / 2;
   let y = 112;
+  items.push({ kind: "header", id: "difficulty", label: "Difficulty", trailing: gameModeLabel(), x, y, w, h: 58 });
+  y += 66;
+  if (optionOpen === "difficulty") {
+    [{ id: "classic", name: "Classic", action: "mode" }, { id: "arcade", name: "Arcade", action: "mode" }].forEach(kid => {
+      items.push(Object.assign({ kind: "child", section: "difficulty", x: x + 18, y, w: w - 18, h: 44 }, kid));
+      y += 50;
+    });
+  }
   optionSections().forEach(sec => {
     items.push({ kind: "header", id: sec.id, label: sec.label, x, y, w, h: 58 });
     y += 66;
@@ -530,6 +1806,16 @@ function drawThumbFrame(b) {
   ctx.clip();
   return b;
 }
+function drawImageCover(img, x, y, w, h) {
+  if (!img || !img.complete || !img.naturalWidth) return false;
+  const ir = img.naturalWidth / img.naturalHeight;
+  const sr = w / h;
+  let dw, dh;
+  if (ir > sr) { dh = h; dw = dh * ir; }
+  else { dw = w; dh = dw / ir; }
+  ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  return true;
+}
 function drawThemeThumb(b) {
   const th = themeById(theme);
   const box = drawThumbFrame(b);
@@ -538,7 +1824,12 @@ function drawThemeThumb(b) {
   g.addColorStop(1, th.bot);
   ctx.fillStyle = g;
   ctx.fillRect(box.x, box.y, box.w, box.h);
-  if (th.space) {
+  if (th.future) {
+    if (!drawImageCover(storeIconFutureImg, box.x, box.y, box.w, box.h)) {
+      ctx.fillStyle = "#120a28";
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+    }
+  } else if (th.space) {
     ctx.fillStyle = cream;
     for (let i = 0; i < 7; i++) {
       ctx.globalAlpha = 0.75;
@@ -577,6 +1868,38 @@ function drawThemeThumb(b) {
 }
 function drawCastThumb(b) {
   drawThumbFrame(b);
+  if (character === "flytaxi") {
+    const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+    if (theme === "future") {
+      g.addColorStop(0, "#0b0618"); g.addColorStop(1, "#120a28");
+    } else if (theme === "space") {
+      g.addColorStop(0, "#05060a"); g.addColorStop(1, "#0a0c14");
+    } else if (theme === "night") {
+      g.addColorStop(0, "#12182a"); g.addColorStop(1, "#0c101c");
+    } else {
+      g.addColorStop(0, "#d9f3ff"); g.addColorStop(1, "#9ed4ef");
+    }
+    ctx.fillStyle = g;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    const taxi = imgReady(storeFlyTaxiCharacterImg)
+      ? storeFlyTaxiCharacterImg
+      : (imgReady(flyTaxiTiltOn.center) ? flyTaxiTiltOn.center : (imgReady(flyTaxiTiltOff.center) ? flyTaxiTiltOff.center : flyTaxiImgs[1]));
+    const s = Math.min(b.w, b.h) * 0.88;
+    const px = b.x + (b.w - s) / 2;
+    const py = b.y + (b.h - s) / 2;
+    if (imgReady(taxi)) ctx.drawImage(taxi, px, py, s, s);
+    else {
+      ctx.fillStyle = "#7a4cff";
+      ctx.beginPath();
+      ctx.ellipse(b.x + b.w / 2, b.y + b.h / 2 + 2, b.w * 0.36, b.h * 0.18, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.strokeStyle = ink();
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+    return;
+  }
   ctx.fillStyle = "#7ec8e8";
   ctx.fillRect(b.x, b.y, b.w, b.h);
   const img = ufoImgs[1];
@@ -646,15 +1969,76 @@ function drawNoAdsThumb(b) {
   ctx.lineTo(cx + rad * 0.7, cy - rad * 0.7);
   ctx.stroke();
 }
+function drawDifficultyThumb(b) {
+  drawThumbFrame(b);
+  ctx.fillStyle = isDarkTheme() ? "#1b2238" : "#e4d2b0";
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.restore();
+  ctx.strokeStyle = ink();
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  const x0 = b.x + 7;
+  const yb = b.y + b.h - 8;
+  ctx.beginPath();
+  ctx.moveTo(x0, yb);
+  ctx.lineTo(x0 + 6, yb - 7);
+  ctx.lineTo(x0 + 12, yb - 3);
+  ctx.lineTo(x0 + 20, yb - 16);
+  ctx.stroke();
+}
+function drawRanksThumb(b) {
+  drawThumbFrame(b);
+  ctx.fillStyle = isDarkTheme() ? "#1b2238" : "#8ec8e4";
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.restore();
+  ctx.strokeStyle = ink();
+  ctx.fillStyle = ink();
+  ctx.lineWidth = 1.6;
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2 + 3;
+  ctx.beginPath();
+  ctx.arc(cx, cy, b.w * 0.2, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - 6, cy - 8);
+  ctx.lineTo(cx, cy - 16);
+  ctx.lineTo(cx + 6, cy - 8);
+  ctx.stroke();
+}
+function drawViewThumb(b) {
+  drawThumbFrame(b);
+  const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+  g.addColorStop(0, "#d9f3ff");
+  g.addColorStop(1, "#9ed4ef");
+  ctx.fillStyle = g;
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = ink();
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  ctx.moveTo(b.x + 8, b.y + 8);
+  ctx.lineTo(b.x + 8, b.y + b.h - 8);
+  ctx.moveTo(b.x + b.w - 8, b.y + 8);
+  ctx.lineTo(b.x + b.w - 8, b.y + b.h - 8);
+  ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle = ink();
+  ctx.lineWidth = 1.4;
+  ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+}
 function drawRowIcon(id, r) {
   const b = iconBox(r);
-  if (id === "theme") drawThemeThumb(b);
+  if (id === "view") drawViewThumb(b);
+  else if (id === "difficulty") drawDifficultyThumb(b);
+  else if (id === "theme") drawThemeThumb(b);
   else if (id === "characters") drawCastThumb(b);
   else if (id === "bundles") drawBundleThumb(b);
   else if (id === "adfree") drawNoAdsThumb(b);
+  else if (id === "ranks") drawRanksThumb(b);
 }
 function leavePanel() {
   if (panel === "store-theme" || panel === "store-characters" || panel === "store-bundles" || panel === "soon") panel = "store";
+  else if (panel === "ranks") panel = ranksReturn === "options" ? "options" : "menu";
   else panel = "menu";
 }
 canvas.addEventListener("pointerdown", e => {
@@ -663,17 +2047,35 @@ canvas.addEventListener("pointerdown", e => {
   const [x, y] = localPoint(e);
   if (!started) {
     if (panel === "menu") {
-      if (inStart(x, y)) { reset(); setX(e.clientX); return; }
+      if (inStart(x, y)) {
+        reset();
+        setX(e.clientX);
+        if (isArcade()) beginArcadeGrab(x, y);
+        return;
+      }
+      if (hitBox(ranksCornerBox(), x, y)) { openRanks("menu"); return; }
       if (hitBox(menuBtn(0), x, y)) { optionOpen = ""; panel = "options"; return; }
       if (hitBox(menuBtn(1), x, y)) { panel = "store"; return; }
-    } else if (panel === "options" || panel === "store" || panel === "store-theme" || panel === "store-characters" || panel === "store-bundles" || panel === "soon") {
+    } else if (panel === "options" || panel === "store" || panel === "store-theme" || panel === "store-characters" || panel === "store-bundles" || panel === "soon" || panel === "ranks") {
       if (hitBox(backBox(), x, y)) { leavePanel(); return; }
+      if (panel === "ranks") {
+        if (hitBox(ranksSignInBox(), x, y)) { flybyCall("openLeaderboard"); return; }
+        ranksPointerLastY = y;
+        return;
+      }
       if (panel === "options") {
         for (const item of optionLayout()) {
           if (!hitBox(item, x, y)) continue;
+          if (item.id === "difficulty") { optionOpen = optionOpen === "difficulty" ? "" : "difficulty"; return; }
+          if (item.action === "mode") { applyGameMode(item.id); return; }
+          if (item.id === "ranks") { openRanks("options"); return; }
           if (item.kind === "header") { optionOpen = optionOpen === item.id ? "" : item.id; return; }
           if (item.action === "theme") applyTheme(item.id);
           if (item.action === "character") applyCharacter(item.id);
+          if (item.action === "testReengage") {
+            flybyCall("testReengage");
+            showBuyToast("Reminder in 15s — background the app");
+          }
           return;
         }
       }
@@ -696,6 +2098,7 @@ canvas.addEventListener("pointerdown", e => {
           if (!hitBox(themeCard(i), x, y)) continue;
           if (th.id === "night" && !owns("night")) { buyProduct("night"); break; }
           if (th.id === "space" && !owns("space")) { buyProduct("space"); break; }
+          if (th.id === "future" && !owns("future")) { buyProduct("future"); break; }
           applyTheme(th.id);
           break;
         }
@@ -706,6 +2109,7 @@ canvas.addEventListener("pointerdown", e => {
           if (!hitBox(characterCard(i), x, y)) continue;
           // Buy only — never also applyCharacter on an unowned UFO tap.
           if (ch.id === "ufo" && !owns("ufo")) { buyProduct("ufo"); break; }
+          if (ch.id === "flytaxi" && !owns("flytaxi")) { buyProduct("flytaxi"); break; }
           applyCharacter(ch.id);
           break;
         }
@@ -713,7 +2117,7 @@ canvas.addEventListener("pointerdown", e => {
       if (panel === "store-bundles") {
         for (let i = 0; i < BUNDLES.length; i++) {
           if (!hitBox(bundleCard(i), x, y)) continue;
-          const offer = spaceUfoOffer();
+          const offer = bundleOffer(BUNDLES[i].id);
           if (offer.product) buyProduct(offer.product);
           break;
         }
@@ -728,11 +2132,37 @@ canvas.addEventListener("pointerdown", e => {
     if (hitBox(privacyBox(), x, y)) { flybyCall("privacy"); return; }
     return;
   }
-  setX(e.clientX);
+  if (isArcade()) {
+    beginArcadeGrab(x, y);
+    noteTaxiDx(bird.x);
+  } else {
+    setX(e.clientX);
+  }
 });
-canvas.addEventListener("pointermove", e => { if (pointer && alive && started) setX(e.clientX); });
-canvas.addEventListener("pointerup", () => { pointer = false; });
-canvas.addEventListener("pointercancel", () => { pointer = false; });
+canvas.addEventListener("pointermove", e => {
+  if (pointer && alive && started) {
+    if (isArcade()) {
+      const [tx, ty] = localPoint(e);
+      applyArcadeDrag(tx, ty);
+    } else {
+      setX(e.clientX);
+    }
+  }
+  else if (pointer && !started && panel === "ranks" && ranksPointerLastY != null) {
+    const [, y] = localPoint(e);
+    ranksScroll -= (y - ranksPointerLastY);
+    ranksPointerLastY = y;
+    clampRanksScroll();
+  }
+});
+canvas.addEventListener("pointerup", () => { pointer = false; taxiLastX = null; ranksPointerLastY = null; clearArcadeGrab(); });
+canvas.addEventListener("pointercancel", () => { pointer = false; taxiLastX = null; ranksPointerLastY = null; clearArcadeGrab(); });
+canvas.addEventListener("wheel", e => {
+  if (started || panel !== "ranks") return;
+  e.preventDefault();
+  ranksScroll += e.deltaY;
+  clampRanksScroll();
+}, { passive: false });
 
 function drawSky() {
   const th = themeById(theme);
@@ -745,6 +2175,7 @@ function drawSky() {
 
   if (!stars.length) layoutStars();
   if (theme === "space") drawSpace();
+  else if (theme === "future") drawFuture();
   else if (theme === "night") drawNight();
   else {
     skyScroll += started && alive ? 1.15 : 0.35;
@@ -753,6 +2184,7 @@ function drawSky() {
       drawCloud(c.x, y, c.s);
     }
   }
+  applyViewMode();
 }
 function planetPalette(hue) {
   const sets = [
@@ -1020,7 +2452,173 @@ function drawNight() {
   }
   ctx.drawImage(drawNight.moon, W - 96, 52);
 }
-function isDarkTheme() { return theme === "night" || theme === "space"; }
+function tileFutureStrip(img, x, w, speed) {
+  if (!img || !img.complete || !img.naturalWidth || w < 8) return false;
+  const tileH = img.naturalHeight * (w / img.naturalWidth);
+  if (tileH < 8) return false;
+  // Integer Y + 1px overlap avoids hairline gaps when tileH is non-integer (non-390 widths).
+  let y = -((skyScroll * speed) % tileH);
+  const step = Math.max(1, tileH - 1);
+  while (y < H) {
+    const yy = Math.floor(y);
+    ctx.drawImage(img, x, yy, w, Math.ceil(tileH) + 1);
+    y += step;
+  }
+  return true;
+}
+function futureStripWidth() {
+  return Math.min(Math.max(70, W * 0.2), W * 0.26);
+}
+function drawFutureLaneMarks() {
+  // Crisp dashed lanes on the purple road — not baked into the PNG.
+  // Integer CSS px + fillRect so marks stay sharp under DPR transform.
+  const midX = Math.round(W * 0.5);
+  const dash = 26;
+  const gap = 20;
+  const period = dash + gap;
+  const scroll = Math.floor(skyScroll) % period;
+  ctx.save();
+  ctx.fillStyle = "rgba(236, 228, 248, 0.92)";
+  for (const dx of [-28, 28]) {
+    const x = midX + dx;
+    for (let y = scroll - period; y < H + dash; y += period) {
+      ctx.fillRect(x - 1, Math.floor(y), 2, dash);
+    }
+  }
+  // Faint shorter center ticks
+  const tick = 10;
+  const tickGap = 36;
+  const tickPeriod = tick + tickGap;
+  const tickScroll = Math.floor(skyScroll) % tickPeriod;
+  ctx.fillStyle = "rgba(236, 228, 248, 0.28)";
+  for (let y = tickScroll - tickPeriod; y < H + tick; y += tickPeriod) {
+    ctx.fillRect(midX, Math.floor(y), 1, tick);
+  }
+  ctx.restore();
+}
+function drawFuture2D() {
+  if (!futureTileH) layoutFuture();
+  const img = futureBackdropImg;
+  if (img && img.complete && img.naturalWidth && futureTileH) {
+    const tileH = futureTileH;
+    // Integer Y + 1px overlap: art is the real seam fix; this kills subpixel hairlines only.
+    const prevSmooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    let y = -(skyScroll % tileH);
+    const step = Math.max(1, tileH - 1);
+    while (y < H) {
+      const yy = Math.floor(y);
+      ctx.drawImage(img, 0, yy, W, Math.ceil(tileH) + 1);
+      y += step;
+    }
+    ctx.imageSmoothingEnabled = prevSmooth;
+    drawFutureLaneMarks();
+    return;
+  }
+  const th = themeById("future");
+  ctx.fillStyle = th.mid || "#120a28";
+  ctx.fillRect(0, 0, W, H);
+  drawFutureLaneMarks();
+}
+function drawFuture3D() {
+  // Flat corridor: L/R buildings stream past. Not worm's-eye / no vanishing towers.
+  const th = themeById("future");
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, th.mid || "#120a28");
+  g.addColorStop(1, th.bot || "#070412");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  const stripW = futureStripWidth();
+  ctx.fillStyle = "rgba(8,6,22,0.4)";
+  ctx.fillRect(stripW, 0, W - stripW * 2, H);
+  const okL = tileFutureStrip(futureBuildingsLeftImg, 0, stripW, 1.35);
+  const okR = tileFutureStrip(futureBuildingsRightImg, W - stripW, stripW, 1.35);
+  if (!okL || !okR) {
+    ctx.fillStyle = "rgba(8,12,20,0.92)";
+    if (!okL) ctx.fillRect(0, 0, stripW, H);
+    if (!okR) ctx.fillRect(W - stripW, 0, stripW, H);
+    ctx.strokeStyle = "rgba(180,200,220,0.28)";
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 12; i++) {
+      const y = ((i * 64 + skyScroll * 1.35) % (H + 64)) - 32;
+      if (!okL) ctx.strokeRect(4, y, stripW - 8, 48);
+      if (!okR) ctx.strokeRect(W - stripW + 4, y + 10, stripW - 8, 48);
+    }
+  }
+}
+function drawFuture() {
+  skyScroll += started && alive ? 1.2 : 0.32;
+  drawFuture2D();
+}
+function applyFutureViewMode() {
+  drawFuture2D();
+}
+function applyViewMode() {
+  applyViewMode.tick = (applyViewMode.tick || 0) + (started && alive ? 1.05 : 0.3);
+  // Future 2D backdrop vs 3D L/R strips stay in drawFuture. Do not redraw them here.
+  if (theme === "future") return;
+  if (!viewModeIs3D()) return;
+  const dark = theme === "night" || theme === "space";
+  const edge = Math.min(54, W * 0.15);
+  const topIn = edge * 0.48;
+  const scroll = applyViewMode.tick;
+  function sidePath(left) {
+    ctx.beginPath();
+    if (left) {
+      ctx.moveTo(0, 0);
+      ctx.lineTo(topIn, 0);
+      ctx.lineTo(edge, H);
+      ctx.lineTo(0, H);
+    } else {
+      ctx.moveTo(W, 0);
+      ctx.lineTo(W - topIn, 0);
+      ctx.lineTo(W - edge, H);
+      ctx.lineTo(W, H);
+    }
+    ctx.closePath();
+  }
+  ctx.save();
+  ctx.fillStyle = theme === "sky" ? "rgba(70,108,138,0.7)" : theme === "night" ? "rgba(0,0,0,0.78)" : "rgba(16,14,32,0.78)";
+  sidePath(true);
+  ctx.fill();
+  sidePath(false);
+  ctx.fill();
+  ctx.strokeStyle = theme === "sky" ? "rgba(255,255,255,0.35)" : "rgba(230,211,176,0.32)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(topIn, 0);
+  ctx.lineTo(edge, H);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(W - topIn, 0);
+  ctx.lineTo(W - edge, H);
+  ctx.stroke();
+  for (const left of [true, false]) {
+    ctx.save();
+    sidePath(left);
+    ctx.clip();
+    for (let i = 0; i < 10; i++) {
+      const y = ((i * 72 + scroll * 1.25) % (H + 72)) - 52;
+      const bw = 18 + (i % 3) * 9;
+      const bh = 40 + (i % 4) * 12;
+      ctx.fillStyle = theme === "sky"
+        ? (i % 2 ? "rgba(36,64,88,0.55)" : "rgba(110,150,178,0.42)")
+        : (i % 2 ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.07)");
+      ctx.fillRect(left ? 3 : W - bw - 12, y, bw + 8, bh);
+      if (dark) {
+        ctx.fillStyle = theme === "night" ? "rgba(230,211,176,0.62)" : "rgba(150,180,255,0.45)";
+        const wx = left ? 9 : W - edge + 11;
+        for (let k = 0; k < 3; k++) {
+          ctx.fillRect(wx + k * 8, y + 10, 2.6, 3.4);
+          ctx.fillRect(wx + k * 8, y + 20, 2.6, 3.4);
+        }
+      }
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function isDarkTheme() { return theme === "night" || theme === "space" || theme === "future"; }
 function tintSprite(img, dx, dy, s) {
   if (!isDarkTheme()) {
     ctx.drawImage(img, dx, dy, s, s);
@@ -1059,10 +2657,48 @@ function drawCloud(x, y, s) {
   ctx.restore();
 }
 
+function imgReady(img) {
+  return !!(img && img.complete && img.naturalWidth);
+}
+function taxiBankKey() {
+  if (taxiBank < 0) return "left";
+  if (taxiBank > 0) return "right";
+  return "center";
+}
 function drawBird() {
+  ctx.save();
+  ctx.globalAlpha *= arcadeGhostAlpha();
+  try {
+  const s = arcadePlayerAbsorbTarget().drawS;
+  if (character === "flytaxi") {
+    const key = taxiBankKey();
+    let img = null;
+    if (key === "center") {
+      // stationary + flames ON (no hover frame thrash)
+      img = imgReady(flyTaxiTiltOn.center) ? flyTaxiTiltOn.center : flyTaxiTiltOff.center;
+    } else {
+      // tilting: flames OFF
+      img = imgReady(flyTaxiTiltOff[key]) ? flyTaxiTiltOff[key] : flyTaxiTiltOff.center;
+    }
+    if (imgReady(img)) {
+      ctx.drawImage(img, bird.x - s / 2, bird.y - s / 2, s, s);
+      return;
+    }
+    ctx.fillStyle = "#f2f2f2";
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(bird.x, bird.y, 28, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#f0c14a";
+    ctx.beginPath();
+    ctx.arc(bird.x, bird.y - 12, 4, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
   if (character === "ufo") {
     // Filled UFO art reads larger than the thin bird line at the same box — draw ~74.
-    const s = 74;
     const img = ufoImgs[bird.frame % 4];
     // UFO keeps purple/silver color on every theme (never cream-tint)
     if (img && img.complete && img.naturalWidth) {
@@ -1083,7 +2719,6 @@ function drawBird() {
     ctx.stroke();
     return;
   }
-  const s = 96;
   const img = imgs[bird.frame];
   if (img && img.complete && img.naturalWidth) {
     // Bird cream-inks on Night/Space via tintSprite; full color on Sky
@@ -1100,11 +2735,22 @@ function drawBird() {
     ctx.lineTo(bird.x + 26, bird.y + 6);
     ctx.stroke();
   }
+  } finally {
+    ctx.restore();
+  }
 }
 
 function drawPlane(o) {
   ctx.save();
   ctx.translate(o.x, o.y);
+  if (isArcade() && o.arcadeCrinkle) {
+    // Paper-death crinkle rate (0.55) so the living plane flutters in place.
+    const ang = (o.arcadeCrinkleT || 0) * 0.55;
+    const wob = Math.sin(ang);
+    const squash = 0.72 + 0.28 * Math.cos(ang * 1.7);
+    ctx.rotate(wob * 0.42);
+    ctx.scale(1, squash);
+  }
   ctx.strokeStyle = isDarkTheme() ? cream : "#1a1a1a";
   ctx.lineWidth = 2.4;
   ctx.lineJoin = "round";
@@ -1126,6 +2772,15 @@ function drawPlane(o) {
   ctx.moveTo(0, 18);
   ctx.lineTo(0, -12);
   ctx.stroke();
+  if (isArcade() && o.arcadeCrinkle) {
+    const wob = Math.sin((o.arcadeCrinkleT || 0) * 0.55);
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.moveTo(-10 * wob, -6);
+    ctx.lineTo(8, 4 + wob * 6);
+    ctx.lineTo(-4, 10);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -1170,6 +2825,48 @@ function drawMeteor(o) {
   }
   ctx.restore();
 }
+function drawFoeAirplane(o) {
+  const img = foeAirplaneImg;
+  const s = o.s || 78;
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  // foe-airplane.png is nose-up (flames at bottom); rotate 180 so oncoming traffic faces the player.
+  ctx.rotate((o.rot != null ? o.rot : 0) + Math.PI);
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, -s / 2, -s / 2, s, s);
+  } else {
+    ctx.fillStyle = "#c8c8c8";
+    ctx.strokeStyle = isDarkTheme() ? cream : "#1a1a1a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, s * 0.38);
+    ctx.lineTo(-s * 0.28, -s * 0.3);
+    ctx.lineTo(s * 0.28, -s * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+// Airplane is rotated 180° for oncoming (art is nose-up). Flying car stays unflipped.
+function drawFoeFlyingCar(o) {
+  const img = foeFlyingCarImg;
+  const s = o.s || 76;
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  if (img && img.complete && img.naturalWidth) {
+    ctx.drawImage(img, -s / 2, -s / 2, s, s);
+  } else {
+    ctx.fillStyle = "#f0f0f0";
+    ctx.strokeStyle = isDarkTheme() ? cream : "#1a1a1a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 26, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 function drawFoeUfo(o) {
   const img = foeUfoImg;
   const s = o.s || 78;
@@ -1192,8 +2889,8 @@ function drawFoeUfo(o) {
 
 function halfW(o) {
   if (o.kind === "plane") return 22;
-  if (o.kind === "meteor") return (o.s || 72) * 0.34;
-  if (o.kind === "foe") return (o.s || 78) * 0.34;
+  if (o.kind === "meteor" || o.kind === "airplane") return (o.s || 72) * 0.34;
+  if (o.kind === "foe" || o.kind === "flyingcar") return (o.s || 78) * 0.34;
   return (o.s || 78) * 0.36;
 }
 function openSpans(extra, bandY) {
@@ -1218,27 +2915,39 @@ function hasLane(extra, bandY) {
   return openSpans(extra, bandY).some(g => g[1] - g[0] >= 110);
 }
 let lastHole = 0.5;
+let lastGapW = 0;
+let futureGapPhase = "weave";
+let futureGapPhaseLeft = 4;
 function tier() {
   const s = dist;
-  if (s < 500) return 0;
-  if (s < 2000) return 1;
-  if (s < 4000) return 2;
-  if (s < 8000) return 3;
-  if (s < 12000) return 4;
-  return 5;
+  if (s < 250) return 0;
+  if (s < 750) return 1;
+  if (s < 2000) return 2;
+  if (s < 4000) return 3;
+  if (s < 8000) return 4;
+  if (s < 12000) return 5;
+  return 6;
 }
 function pace() {
-  // steps freeze after 12000. gap stays wide so a near-miss still lives.
+  // 7 steps, freeze after 12000. Each bump is slight. gap stays a real pass.
   const steps = [
     { plane: 0.40, planeVy: 6.0, every: 80, gap: 158, minShift: 86, maxShift: 0.34, follow: 999, spawnY: -50 },
-    { plane: 0.44, planeVy: 7.2, every: 60, gap: 156, minShift: 108, maxShift: 0.40, follow: 175, spawnY: -40 },
-    { plane: 0.48, planeVy: 8.3, every: 50, gap: 154, minShift: 122, maxShift: 0.44, follow: 215, spawnY: -28 },
-    { plane: 0.50, planeVy: 9.1, every: 40, gap: 152, minShift: 136, maxShift: 0.48, follow: 245, spawnY: -12 },
-    { plane: 0.52, planeVy: 9.9, every: 40, gap: 150, minShift: 148, maxShift: 0.50, follow: 268, spawnY: 4 },
-    { plane: 0.54, planeVy: 10.6, every: 40, gap: 148, minShift: 160, maxShift: 0.52, follow: 285, spawnY: 16 }
+    { plane: 0.42, planeVy: 6.7, every: 66, gap: 157, minShift: 100, maxShift: 0.38, follow: 168, spawnY: -44 },
+    { plane: 0.45, planeVy: 7.5, every: 56, gap: 155, minShift: 114, maxShift: 0.42, follow: 188, spawnY: -34 },
+    { plane: 0.48, planeVy: 8.4, every: 48, gap: 153, minShift: 126, maxShift: 0.45, follow: 222, spawnY: -22 },
+    { plane: 0.50, planeVy: 9.2, every: 42, gap: 151, minShift: 138, maxShift: 0.48, follow: 250, spawnY: -8 },
+    { plane: 0.52, planeVy: 10.0, every: 40, gap: 149, minShift: 150, maxShift: 0.50, follow: 272, spawnY: 8 },
+    { plane: 0.54, planeVy: 10.7, every: 38, gap: 147, minShift: 162, maxShift: 0.52, follow: 288, spawnY: 16 }
   ];
-  return steps[tier()];
+  const raw = steps[tier()];
+  // All themes share Future flight cadence (theme = visuals only).
+  return Object.assign({}, raw, {
+    every: Math.max(34, raw.every - 6),
+    follow: raw.follow >= 900 ? raw.follow : Math.max(150, raw.follow - 16),
+    gap: raw.gap + 2
+  });
 }
+function arcadeFormPace(p) { return p; }
 function pickGap(gapW, away, p) {
   const pad = 18;
   const lo = pad + gapW / 2;
@@ -1260,53 +2969,849 @@ function pickGap(gapW, away, p) {
   }
   return best;
 }
-function bodyHw(kind, size) {
-  if (kind === "plane") return 26;
-  if (kind === "meteor") return Math.max(30, size * 0.36);
-  if (kind === "foe") return Math.max(32, size * 0.38);
-  return Math.max(34, size * 0.4);
+function classicBalancedGapWindow(gapW) {
+  // 2+1 / 1+2 needs both leftovers landable and one side cap>=2.
+  // leftW = gapC - gapW/2 - 8, rightW = W - 8 - gapC - gapW/2.
+  const pad = 18;
+  const lo = pad + gapW / 2;
+  const hi = Math.max(lo + 4, W - pad - gapW / 2);
+  const thinNeed = theme === "space" ? 82 : 86;
+  const wideNeed = 96;
+  const useLo = Math.max(lo, thinNeed + gapW / 2 + 8);
+  const useHi = Math.min(hi, W - 8 - thinNeed - gapW / 2);
+  if (useHi - useLo < 8) return null;
+  // Also keep a cap-2 side possible somewhere in the window.
+  const wideLo = wideNeed + gapW / 2 + 8;
+  const wideHi = W - 8 - wideNeed - gapW / 2;
+  if (useHi < wideLo && useLo > wideHi) return null;
+  return [useLo, useHi];
 }
-function dropBody(p, x, y, gapL, gapR) {
+function pickClassicWeaveGap(gapW, away, p) {
+  // Classic post-2k weave only. Future keeps pickGap (TF30). After 2k the
+  // shared minShift parks the hole on a lip, so thinMax===0 and 2+1 never
+  // fires — Sky/Night/Space read as the old max-2 track. Stay inside a
+  // both-sides-landable window and relax minShift to that window.
+  const win = classicBalancedGapWindow(gapW);
+  if (!win) return pickGap(gapW, away, p);
+  const lo = win[0];
+  const hi = win[1];
+  const minShift = Math.min(p.minShift, Math.max(10, (hi - lo) * 0.45));
+  const maxShift = Math.max(minShift + 8, hi - lo);
+  let best = Math.max(lo, Math.min(hi, away));
+  let bestScore = -1;
+  for (let i = 0; i < 22; i++) {
+    const c = lo + Math.random() * Math.max(1, hi - lo);
+    const d = Math.abs(c - away);
+    if (d < minShift || d > maxShift) continue;
+    const score = d + Math.random() * 8;
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  if (bestScore < 0) {
+    const dir = away > (lo + hi) / 2 ? -1 : 1;
+    best = Math.max(lo, Math.min(hi, away + dir * Math.min(minShift, hi - lo)));
+  }
+  return best;
+}
+function drawSize(kind, size) {
+  if (kind === "airplane") return size + 16;
+  if (kind === "flyingcar") return size + 36;
+  return size;
+}
+function bodyHw(kind, drawnS) {
+  if (kind === "plane") return 26;
+  if (kind === "airplane" || kind === "flyingcar") return Math.max(30, drawnS * 0.45);
+  if (kind === "meteor") return Math.max(30, drawnS * 0.36);
+  if (kind === "foe") return Math.max(32, drawnS * 0.38);
+  return Math.max(34, drawnS * 0.4);
+}
+function dropBody(p, x, y, gapL, gapR, forcedKind, forcedSize) {
   let kind;
-  if (theme === "space") {
+  if (forcedKind) {
+    kind = forcedKind;
+  } else if (theme === "future") {
+    kind = Math.random() < 0.5 ? "airplane" : "flyingcar";
+  } else if (theme === "space") {
     kind = Math.random() < 0.58 ? "meteor" : "foe";
   } else {
     kind = Math.random() < p.plane ? "plane" : "bird";
   }
-  const size = kind === "meteor" ? (56 + Math.random() * 16) : (58 + Math.random() * 10);
-  const hw = bodyHw(kind, size);
+  const tightAir = forcedKind === "airplane";
+  const size = forcedSize != null
+    ? forcedSize
+    : ((kind === "meteor" || kind === "airplane")
+      ? (56 + Math.random() * (tightAir ? 4 : 16))
+      : (58 + Math.random() * 10));
+  const s = drawSize(kind, size);
+  const hw = bodyHw(kind, s);
+  const slop = 14;
   x = Math.max(hw + 8, Math.min(W - hw - 8, x));
-  if (x + hw > gapL - 14 && x - hw < gapR + 14) return false;
-  const body = { kind, x, y, vy: p.planeVy };
+  const eps = 0.05;
+  if (x + hw > gapL - slop + eps && x - hw < gapR + slop - eps) {
+    const leftX = gapL - slop - hw;
+    const rightX = gapR + slop + hw;
+    x = Math.abs(x - leftX) <= Math.abs(x - rightX) ? leftX : rightX;
+    x = Math.max(hw + 8, Math.min(W - hw - 8, x));
+    if (x + hw > gapL - slop + eps && x - hw < gapR + slop - eps) return false;
+  }
+  const body = { kind, x, y, vy: p.planeVy, s };
   if (kind === "bird") {
-    body.s = size;
     body.frame = Math.floor(Math.random() * 4);
     body.flap = Math.random() * 80;
   } else if (kind === "meteor") {
-    body.s = size;
     body.frame = Math.floor(Math.random() * 3);
     body.rot = Math.random() * Math.PI * 2;
     body.spin = (Math.random() - 0.5) * 0.04;
+  } else if (kind === "airplane") {
+    body.rot = 0;
+  } else if (kind === "flyingcar") {
+    body.frame = 0;
   } else if (kind === "foe") {
-    body.s = size;
     body.frame = 0;
   }
   obstacles.push(body);
   return true;
 }
-function fillSide(p, a, b, y, gapL, gapR, side) {
+function futurePack3() {
+  return dist >= 2000;
+}
+function futurePack3Rate() {
+  const t = tier();
+  if (t < 3) return 0;
+  if (t === 3) return 0.18;
+  if (t === 4) return 0.26;
+  if (t === 5) return 0.32;
+  return 0.36;
+}
+function classicPackHw() {
+  // Largest common foe bodyHw on this theme (drawn-size style).
+  // Sky/Night bird: max(34, s*0.4) = 34. Space foe: max(32, s*0.38) = 32.
+  // Meteor is 30. Future keeps its own 86 / 140 below — do not use this.
+  return theme === "space" ? 32 : 34;
+}
+function classicClear1() {
+  // Same recipe as Future's 86: 2*hw + slop 14 + 4 float.
+  return 2 * classicPackHw() + 18;
+}
+function classicClear3() {
+  // Future 140 ≈ 4.1 * airplane hw. Same ratio so a 3-pack does not
+  // claim a strip that only barely holds 2.
+  return Math.ceil(classicPackHw() * 4.1);
+}
+function sideCap(w) {
+  if (w < 40) return 0;
+  // After 2k, a forced Future airplane needs ~2*hw+14 fair clearance
+  // (tight size 60 → drawn 76 → hw 34.2 → 82.4, plus a px of float).
+  // Do not claim thinMax>=1 if dropBody cannot land — that zeros a
+  // "landable" side and reopens the cruise. Future 86 / 140 stay TF30.
+  // Classic post-2k uses classicClear1 / classicClear3. Pre-2k stays at 40.
+  if (futurePack3() && w < 86) return 0;
+  if (w < 96) return 1;
+  if (futurePack3() && w >= 140) return 3;
+  return 2;
+}
+function futureMix(gapL, gapR) {
+  // Counts only — never rewrite the hole. After 2k: 3 total foes. Prefer
+  // 2+1 / 1+2 whenever both strips can hold a foe (thinMax >= 1 and
+  // wideMax >= 2). Never zero the thin side when thinMax >= 1 — that
+  // reopens a landable cruise. Occasional n=3 even on the wide strip only
+  // when thinMax === 0 (thin strip genuinely too narrow). No 3+1.
+  const leftW = gapL - 8;
+  const rightW = W - 8 - gapR;
+  const leftMax = sideCap(leftW);
+  const rightMax = sideCap(rightW);
+  const wideLeft = leftW >= rightW;
+  const wideMax = wideLeft ? leftMax : rightMax;
+  const thinMax = wideLeft ? rightMax : leftMax;
+  if (thinMax === 0 && wideMax >= 3 && Math.random() < Math.min(0.52, 0.16 + futurePack3Rate())) {
+    return wideLeft ? { left: 3, right: 0 } : { left: 0, right: 3 };
+  }
+  if (wideLeft) {
+    return { left: Math.min(2, Math.max(1, leftMax)), right: Math.min(1, rightMax) };
+  }
+  return { left: Math.min(1, leftMax), right: Math.min(2, Math.max(1, rightMax)) };
+}
+function futureEdgeChance() {
+  // How often a weave stretch is followed by an edge stretch.
+  // Gentle before 750; more after 750 / 2k. Never flicker every wave.
+  const t = tier();
+  if (t <= 0) return 0.12;
+  if (t === 1) return 0.22;
+  if (t === 2) return 0.42;
+  if (t === 3) return 0.60;
+  return 0.70;
+}
+function beginFutureGapPhase(kind) {
+  if (kind === "edge") {
+    futureGapPhase = "edge";
+    futureGapPhaseLeft = 2 + Math.floor(Math.random() * 3);
+  } else {
+    futureGapPhase = "weave";
+    futureGapPhaseLeft = 3 + Math.floor(Math.random() * 4);
+  }
+}
+function advanceFutureGapPhase() {
+  futureGapPhaseLeft -= 1;
+  if (futureGapPhaseLeft > 0) return;
+  if (futureGapPhase === "edge") {
+    beginFutureGapPhase("weave");
+    return;
+  }
+  if (Math.random() < futureEdgeChance()) beginFutureGapPhase("edge");
+  else beginFutureGapPhase("weave");
+}
+function pickFutureEdgeGap(gapW) {
+  // Far left / far right lips. Prefer the opposite lip from lastHole so
+  // the stretch swings across the screen instead of mid-bobbing.
+  const pad = 18;
+  const lo = pad + gapW / 2;
+  const hi = Math.max(lo + 4, W - pad - gapW / 2);
+  const last = lastHole * W;
+  const mid = (lo + hi) / 2;
+  let preferHi = last < mid;
+  if (Math.random() < 0.15) preferHi = !preferHi;
+  const jitter = Math.min(16, Math.max(4, (hi - lo) * 0.05));
+  const target = preferHi ? hi - Math.random() * jitter : lo + Math.random() * jitter;
+  return Math.max(lo, Math.min(hi, target));
+}
+function legalSideXRange(a, b, gapL, gapR, hw) {
+  // Centers that stay outside the hole (gap ± slop + hw) and inset
+  // hw+8 from the screen edges. Same contract as dropBody.
+  const slop = 14;
+  let lo = Math.max(a, hw + 8);
+  let hi = Math.min(b, W - hw - 8);
+  const mid = (gapL + gapR) / 2;
+  if ((lo + hi) / 2 <= mid) hi = Math.min(hi, gapL - slop - hw);
+  else lo = Math.max(lo, gapR + slop + hw);
+  return [lo, hi];
+}
+function fillEvenPack(p, a, b, y, gapL, gapR, side, n, planned) {
+  // Shared n>=3 placement. Future planning stays in fillFuturePack so
+  // TF30 airplane sizes / RNG order stay bit-identical.
+  const hw = Math.max(...planned.map(o => o.hw));
+  let [lo, hi] = legalSideXRange(a, b, gapL, gapR, hw);
+  if (hi < lo) {
+    const mid = (lo + hi) / 2;
+    lo = mid;
+    hi = mid;
+  }
+  const span = hi - lo;
+  // Equal gaps between foes: first/last on the legal lips. If the
+  // span is shorter than 1.5*min(hw) we still take this max spread
+  // (no lip-collapse) and let the Y cascade keep them readable.
+  const step = n <= 1 ? 0 : span / (n - 1);
+  for (let i = 0; i < n; i++) {
+    const x = n <= 1 ? (lo + hi) / 2 : lo + i * step;
+    const inner = side < 0 ? i === n - 1 : i === 0;
+    const outer = side < 0 ? i === 0 : i === n - 1;
+    // Stronger cascade than +22/+40 so three read as rows, not a blob.
+    // Inner ~0, mid ~55–70, outer ~110–140. n=3 is 3|0 only, so no
+    // opposite-wall lead.
+    let lift;
+    if (inner) lift = Math.random() * 8;
+    else if (outer) lift = 110 + Math.random() * 30;
+    else lift = 55 + Math.random() * 15;
+    dropBody(p, x, y - lift, gapL, gapR, planned[i].kind, planned[i].size);
+  }
+}
+function arcadeFormationOn() {
+  return typeof isArcade === "function" && isArcade()
+    && typeof arcadeFormationId === "function" && !!arcadeFormationId();
+}
+function fillFuturePack(p, a, b, y, gapL, gapR, side, n) {
+  // n>=3 on one Future strip: even centers across the *legal* X range,
+  // not the raw strip. fillSide's a+(i+0.5)*(w/n) lands inner foes in
+  // the hole, then dropBody shoves them onto the same lip → a cluster.
+  // Slim airplanes on the lip slots keep hw down so three can sit
+  // without crumpling. When the span is shorter than 1.5*hw, we still
+  // emit max-spread even centers (no lip-collapse) and stagger Y.
+  // Arcade formation mixes cars only when the car box fits this strip.
+  const planned = [];
+  let arcadeMix = false;
+  if (theme === "future" && arcadeFormationOn()) {
+    const range = legalSideXRange(a, b, gapL, gapR, arcadeFutureLayoutFoe().hw);
+    arcadeMix = range[1] >= range[0];
+  }
+  if (!arcadeMix) {
+    for (let i = 0; i < n; i++) {
+      const kind = "airplane";
+      const size = 56 + Math.random() * 4;
+      const s = drawSize(kind, size);
+      planned.push({ kind, size, s, hw: bodyHw(kind, s) });
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const kind = Math.random() < 0.5 ? "airplane" : "flyingcar";
+      const size = kind === "airplane" ? 56 + Math.random() * 4 : 58;
+      const s = drawSize(kind, size);
+      planned.push({ kind, size, s, hw: bodyHw(kind, s) });
+    }
+  }
+  fillEvenPack(p, a, b, y, gapL, gapR, side, n, planned);
+}
+function fillClassicPack(p, a, b, y, gapL, gapR, side, n) {
+  // Same even legal-X + Y cascade as Future, but plan bird/plane or
+  // meteor/foe at this theme's drawn size. n=2 still uses fillSide's
+  // subtle squeeze-through — do not route pairs through here.
+  const planned = [];
+  for (let i = 0; i < n; i++) {
+    let kind;
+    if (theme === "space") kind = Math.random() < 0.58 ? "meteor" : "foe";
+    else kind = Math.random() < p.plane ? "plane" : "bird";
+    const size = kind === "meteor"
+      ? (56 + Math.random() * 8)
+      : (58 + Math.random() * 6);
+    const s = drawSize(kind, size);
+    planned.push({ kind, size, s, hw: bodyHw(kind, s) });
+  }
+  fillEvenPack(p, a, b, y, gapL, gapR, side, n, planned);
+}
+function fillSide(p, a, b, y, gapL, gapR, side, want) {
   const w = b - a;
   if (w < 40) return;
-  const n = w < 96 ? 1 : 2;
+  const cap = sideCap(w);
+  const n = want == null ? cap : Math.min(Math.max(0, want | 0), cap);
+  if (n <= 0) return;
+  if (n >= 3) {
+    if (theme === "future") fillFuturePack(p, a, b, y, gapL, gapR, side, n);
+    else fillClassicPack(p, a, b, y, gapL, gapR, side, n);
+    return;
+  }
   for (let i = 0; i < n; i++) {
     const x = a + (i + 0.5) * (w / n);
     const inner = side < 0 ? i === n - 1 : i === 0;
+    const outer = side < 0 ? i === 0 : i === n - 1;
     const lead = side < 0 ? 0 : 46;
-    const lift = inner ? lead : lead + 40;
-    dropBody(p, x, y - lift, gapL, gapR);
+    let lift = lead;
+    if (inner) lift = lead;
+    else if (n >= 3 && !outer) lift = lead + 22;
+    else lift = lead + 40;
+    let force = theme === "future" && (n === 1 || w < 130) ? "airplane" : null;
+    if (force && arcadeFormationOn()) {
+      const range = legalSideXRange(a, b, gapL, gapR, arcadeFutureLayoutFoe().hw);
+      if (!(range[1] < range[0])) force = null;
+    }
+    dropBody(p, x, y - lift, gapL, gapR, force);
   }
 }
+function arcadeFormationId() {
+  if (typeof isArcade !== "function" || !isArcade()) return null;
+  if (typeof arcadeActive === "undefined" || !arcadeActive) return null;
+  if (typeof performance !== "undefined" && performance.now() >= arcadeActive.until) return null;
+  const id = arcadeActive.id;
+  if (id !== "mg" && id !== "laser" && id !== "invincible") return null;
+  if (typeof W === "number" && W < 300) return null;
+  return id;
+}
+function arcadeOnScreenFoes() {
+  // Alive bodies in or near the playfield. Far trailers above the spawn line don't count.
+  let n = 0;
+  for (let i = 0; i < obstacles.length; i++) {
+    const y = obstacles[i].y;
+    if (y > -40 && y < H + 40) n++;
+  }
+  return n;
+}
+function arcadeCadenceBlocked(p) {
+  // Soft-cap delays the next wave (blocked → retry). Ghost stays uncapped.
+  const id = arcadeFormationId();
+  const n = arcadeOnScreenFoes();
+  if (id === "mg" && n >= 10) return true;
+  if (id === "laser" && n >= 6) return true;
+  const birdLine = H * 0.72;
+  const incoming = obstacles.filter(o => o.y < birdLine + 20);
+  if (incoming.length) {
+    if (p.follow >= 900) return true;
+    const lowest = Math.max(...incoming.map(o => o.y));
+    if (lowest < p.follow) return true;
+    if (obstacles.some(o => o.y < 100)) return true;
+  }
+  return false;
+}
+function pickArcadeFormVariant(id, forced) {
+  const pool = ARCADE_FORM_POOLS[id];
+  if (!pool || !pool.length) return "";
+  if (forced && pool.indexOf(forced) >= 0) return forced;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+function arcadeFormArm(id, opts) {
+  const force = !!(opts && opts.force);
+  const forced = opts && opts.variant;
+  if (!force && arcadeFormSeenId === id) return;
+  arcadeFormSeenId = id || "";
+  arcadeFormVariant = pickArcadeFormVariant(id, forced || "");
+  arcadeFormSweepSide = 0;
+  arcadeFormTunnelX = 0;
+  arcadeFormTunnelDir = 1;
+  arcadeFormGhostSide = 0;
+}
+function arcadeFormFoe() {
+  if (theme === "future") {
+    if (Math.random() < 0.5) return { kind: "airplane", size: 56 };
+    return { kind: "flyingcar", size: 58 };
+  }
+  if (theme === "space") return { kind: "meteor", size: 56 };
+  return { kind: "bird", size: 60 };
+}
+function arcadeFutureLayoutFoe() {
+  const size = 58;
+  const drawn = drawSize("flyingcar", size); // 94
+  return { kind: "flyingcar", size: size, drawn: drawn, hw: bodyHw("flyingcar", drawn) }; // hw 42.3
+}
+function arcadeFormLayoutFoe() {
+  if (theme === "future") return arcadeFutureLayoutFoe();
+  const foe = arcadeFormFoe(); // sky/space are deterministic — no coin flip
+  const drawn = drawSize(foe.kind, foe.size);
+  return { kind: foe.kind, size: foe.size, drawn: drawn, hw: bodyHw(foe.kind, drawn) };
+}
+function arcadePlayerReach() {
+  if (character === "flytaxi") return 20;
+  if (character === "ufo") return 22;
+  return 36;
+}
+function arcadeFoeReach(kind, size) {
+  if (kind === "bird") return (224 - 128) * size / 256;
+  if (kind === "plane") return 18;
+  const drawn = drawSize(kind, size);
+  if (kind === "airplane") return drawn * 0.16;
+  if (kind === "flyingcar") return drawn * 0.14;
+  if (kind === "meteor") return size * 0.32;
+  return (size || 64) * 0.3;
+}
+function arcadeMgOpen(xs, drawn, kind) {
+  const spanHw = halfW({ kind: kind, s: drawn });
+  const spans = xs.map(x => [x - spanHw - 8, x + spanHw + 8]).sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const s of spans) {
+    if (!merged.length || s[0] > merged[merged.length - 1][1]) merged.push(s.slice());
+    else merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], s[1]);
+  }
+  let best = 0;
+  let left = 16;
+  for (const s of merged) {
+    if (s[0] - left >= 8) best = Math.max(best, s[0] - left);
+    left = Math.max(left, s[1]);
+  }
+  if ((W - 16) - left >= 8) best = Math.max(best, (W - 16) - left);
+  return best;
+}
+function arcadeMgSafe(xs, side, reach) {
+  const inner = side < 0 ? Math.max(...xs) : Math.min(...xs);
+  if (side < 0) return (W - 40) - (inner + reach);
+  return (inner - reach) - 40;
+}
+function spawnArcadeSameTrack(p, opts) {
+  const tight = !!(opts && opts.tight);
+  const id = arcadeFormationId();
+  if (arcadeCadenceBlocked(p)) return false;
+  const before = obstacles.length;
+  let gapW = p.gap;
+  if (tight) gapW = Math.max(20, Math.round(p.gap * 0.24));
+  const gapC = (futureGapPhase === "edge")
+    ? pickFutureEdgeGap(gapW)
+    : pickGap(gapW, lastHole * W, p);
+  const gapL = gapC - gapW / 2;
+  const gapR = gapC + gapW / 2;
+  const y = p.spawnY;
+  let leftWant = null, rightWant = null;
+  if (futurePack3()) {
+    const mix = futureMix(gapL, gapR);
+    leftWant = mix.left; rightWant = mix.right;
+  }
+  fillSide(p, 8, gapL, y, gapL, gapR, -1, leftWant);
+  fillSide(p, gapR, W - 8, y, gapL, gapR, 1, rightWant);
+  lastHole = gapC / W;
+  lastGapW = gapW;
+  advanceFutureGapPhase();
+  if (tight && (id === "mg" || id === "laser")) stampArcadeDivers(before);
+  return true;
+}
+function spawnArcadeFormation(id) {
+  arcadeFormArm(id);
+  const p = pace(); // Classic only — NOT arcadeFormPace(pace())
+  if (id === "invincible") return spawnArcadeSameTrack(p, { tight: false });
+  if (id === "mg" || id === "laser") return spawnArcadeSameTrack(p, { tight: true });
+  return false;
+}
+function arcadeFormStaggerLift(i) {
+  // Lead stays on p.spawnY. i=1 trails 14..28; i>=2 trails 32..52.
+  // Cap 52: a deeper trailer is still y<100 when the lead clears follow, and holds the next wave.
+  if (i <= 0) return 0;
+  if (i === 1) return 14 + Math.random() * 14;
+  return Math.min(52, 32 + Math.random() * 20);
+}
+function arcadeMgJitterNonEdge(xs, step, floorsOk) {
+  // Edge (i=0) stays. Non-edge ±0.28*step; if open/safe floors fail, ±6; else revert that slot.
+  const mag = 0.28 * step;
+  for (let i = 1; i < xs.length; i++) {
+    const base = xs[i];
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    xs[i] = base + sign * mag;
+    if (floorsOk()) continue;
+    xs[i] = base + sign * 6;
+    if (floorsOk()) continue;
+    xs[i] = base;
+  }
+}
+function stampArcadeDivers(fromIdx) {
+  // Formation packs only (callers are MG/laser). ~1 in 3, at least one if 2+ landed.
+  const n = obstacles.length - fromIdx;
+  if (n <= 0) return;
+  let marked = 0;
+  for (let i = 0; i < n; i++) {
+    if (i % 3 !== 0) continue;
+    obstacles[fromIdx + i].arcadeDiver = true;
+    marked++;
+  }
+  if (n >= 2 && marked < 1) obstacles[fromIdx].arcadeDiver = true;
+}
+function spawnArcadeMgSweep(p) {
+  const layout = arcadeFormLayoutFoe();
+  const drawn = layout.drawn;
+  const hw = layout.hw;
+  const step = theme === "future" ? 86 : 58;
+  const edge = layout.hw + 8;
+  let side = arcadeFormSweepSide;
+  if (side !== -1 && side !== 1) side = bird.x < W * 0.5 ? -1 : 1; // pack on the player's side; lane is the far side
+  const reach = arcadePlayerReach() + arcadeFoeReach(layout.kind, layout.size)
+    + ((character === "bird" && (layout.kind === "bird" || layout.kind === "plane")) ? 5 : 0);
+  let n = 3;
+  let xs = null;
+  for (; n >= 2; n--) {
+    const trial = [];
+    for (let i = 0; i < n; i++) {
+      const along = edge + i * step;
+      trial.push(side < 0 ? along : W - along);
+    }
+    if (arcadeMgOpen(trial, drawn, layout.kind) >= 120 && arcadeMgSafe(trial, side, reach) >= 72) {
+      xs = trial;
+      break;
+    }
+  }
+  if (!xs) return false;
+  arcadeMgJitterNonEdge(xs, step, () => arcadeMgOpen(xs, drawn, layout.kind) >= 120 && arcadeMgSafe(xs, side, reach) >= 72);
+  const inner = side < 0 ? Math.max(...xs) : Math.min(...xs);
+  const gapL = side < 0 ? inner + hw + 14 + 1 : 44;
+  const gapR = side < 0 ? W - 44 : inner - hw - 14 - 1;
+  const before = obstacles.length;
+  let landed = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const lift = arcadeFormStaggerLift(i);
+    const foe = arcadeFormFoe();
+    if (dropBody(p, xs[i], p.spawnY - lift, gapL, gapR, foe.kind, foe.size)) landed++;
+  }
+  if (!landed) return false;
+  stampArcadeDivers(before);
+  arcadeFormSweepSide = -side;
+  lastGapW = gapR - gapL;
+  lastHole = ((gapL + gapR) / 2) / W;
+  return true;
+}
+function spawnArcadeMgGallery(p) {
+  // Both edges packed and kept even. Middle stays ≥ 120; a lane wider than
+  // 150 grows the lighter side, then pulls in to ~120–145.
+  const layout = arcadeFormLayoutFoe();
+  const drawn = layout.drawn;
+  const hw = layout.hw;
+  const step = theme === "future" ? 86 : 58;
+  const edge = layout.hw + 8;
+  const reach = arcadePlayerReach() + arcadeFoeReach(layout.kind, layout.size)
+    + ((character === "bird" && (layout.kind === "bird" || layout.kind === "plane")) ? 5 : 0);
+  const birdSide = bird.x < W * 0.5 ? -1 : 1;
+  const build = (nLeft, nRight) => {
+    const left = [];
+    const right = [];
+    for (let i = 0; i < nLeft; i++) left.push(edge + i * step);
+    for (let i = 0; i < nRight; i++) right.push(W - (edge + i * step));
+    return { left, right };
+  };
+  const openOf = (pack) => arcadeMgOpen(pack.left.concat(pack.right), drawn, layout.kind);
+  const floorsOk = (pack) => {
+    if (!pack.left.length || !pack.right.length) return false;
+    if (Math.max(...pack.left) + hw >= Math.min(...pack.right) - hw) return false;
+    if (openOf(pack) < 120) return false;
+    if (arcadeMgSafe(pack.left, -1, reach) < 72) return false;
+    if (arcadeMgSafe(pack.right, 1, reach) < 72) return false;
+    return true;
+  };
+  // Balanced first, then the lighter uneven pairs. Same list either bird side.
+  const orders = [[3, 3], [2, 2], [3, 2], [2, 3], [2, 1], [1, 2], [1, 1]];
+  let pack = null;
+  for (let i = 0; i < orders.length; i++) {
+    const trial = build(orders[i][0], orders[i][1]);
+    if (floorsOk(trial)) { pack = trial; break; }
+  }
+  if (!pack) return false;
+  if (openOf(pack) > 150) {
+    const grown = { left: pack.left.slice(), right: pack.right.slice() };
+    const growLeft = grown.left.length <= grown.right.length;
+    if (growLeft) grown.left.push(Math.max(...grown.left) + step);
+    else grown.right.push(Math.min(...grown.right) - step);
+    if (floorsOk(grown)) pack = grown;
+  }
+  let guard = 0;
+  while (openOf(pack) > 150 && guard++ < 16) {
+    const iL = pack.left.indexOf(Math.max(...pack.left));
+    const iR = pack.right.indexOf(Math.min(...pack.right));
+    const nudge = (moveL, moveR) => {
+      const prevL = pack.left[iL];
+      const prevR = pack.right[iR];
+      pack.left[iL] = prevL + moveL;
+      pack.right[iR] = prevR - moveR;
+      if (!floorsOk(pack)) {
+        pack.left[iL] = prevL;
+        pack.right[iR] = prevR;
+        return false;
+      }
+      return true;
+    };
+    const birdStep = birdSide < 0 ? nudge(10, 4) : nudge(4, 10);
+    if (!birdStep && !nudge(6, 6)) break;
+    if (openOf(pack) <= 145) break;
+  }
+  arcadeMgJitterNonEdge(pack.left, step, () => floorsOk(pack));
+  arcadeMgJitterNonEdge(pack.right, step, () => floorsOk(pack));
+  const innerL = Math.max(...pack.left);
+  const innerR = Math.min(...pack.right);
+  const gapL = innerL + hw + 14 + 1;
+  const gapR = innerR - hw - 14 - 1;
+  if (!(gapR > gapL)) return false;
+  const before = obstacles.length;
+  let landed = 0;
+  const place = (xs) => {
+    for (let i = 0; i < xs.length; i++) {
+      const lift = arcadeFormStaggerLift(i);
+      const foe = arcadeFormFoe();
+      if (dropBody(p, xs[i], p.spawnY - lift, gapL, gapR, foe.kind, foe.size)) landed++;
+    }
+  };
+  place(pack.left);
+  place(pack.right);
+  if (landed < 2) {
+    obstacles.length = before;
+    return false;
+  }
+  stampArcadeDivers(before);
+  lastGapW = gapR - gapL;
+  lastHole = ((gapL + gapR) / 2) / W;
+  return true;
+}
+function spawnArcadeMgChase(p) {
+  // Sweep pack, but every wave sticks to the player's side. Lane stays far. No flip.
+  const layout = arcadeFormLayoutFoe();
+  const drawn = layout.drawn;
+  const hw = layout.hw;
+  const step = theme === "future" ? 86 : 58;
+  const edge = layout.hw + 8;
+  const side = bird.x < W * 0.5 ? -1 : 1;
+  const reach = arcadePlayerReach() + arcadeFoeReach(layout.kind, layout.size)
+    + ((character === "bird" && (layout.kind === "bird" || layout.kind === "plane")) ? 5 : 0);
+  let n = 3;
+  let xs = null;
+  for (; n >= 2; n--) {
+    const trial = [];
+    for (let i = 0; i < n; i++) {
+      const along = edge + i * step;
+      trial.push(side < 0 ? along : W - along);
+    }
+    if (arcadeMgOpen(trial, drawn, layout.kind) >= 120 && arcadeMgSafe(trial, side, reach) >= 72) {
+      xs = trial;
+      break;
+    }
+  }
+  if (!xs) return false;
+  arcadeMgJitterNonEdge(xs, step, () => arcadeMgOpen(xs, drawn, layout.kind) >= 120 && arcadeMgSafe(xs, side, reach) >= 72);
+  const inner = side < 0 ? Math.max(...xs) : Math.min(...xs);
+  const gapL = side < 0 ? inner + hw + 14 + 1 : 44;
+  const gapR = side < 0 ? W - 44 : inner - hw - 14 - 1;
+  const before = obstacles.length;
+  let landed = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const lift = arcadeFormStaggerLift(i);
+    const foe = arcadeFormFoe();
+    if (dropBody(p, xs[i], p.spawnY - lift, gapL, gapR, foe.kind, foe.size)) landed++;
+  }
+  if (!landed) return false;
+  stampArcadeDivers(before);
+  lastGapW = gapR - gapL;
+  lastHole = ((gapL + gapR) / 2) / W;
+  return true;
+}
+function pickArcadeLaserTx(inset, away, minShift) {
+  // pickGap spirit: sample a hole in the legal window, far from bird.x.
+  const lo = inset;
+  const hi = Math.max(lo, W - inset);
+  const mid = (lo + hi) / 2;
+  const farDir = away < mid - 0.5 ? 1 : away > mid + 0.5 ? -1 : (arcadeFormTunnelDir >= 0 ? 1 : -1);
+  let best = Math.max(lo, Math.min(hi, away + farDir * Math.max(minShift, hi - lo)));
+  let bestScore = -1;
+  const span = Math.max(1, hi - lo);
+  for (let i = 0; i < 22; i++) {
+    const c = lo + Math.random() * span;
+    const d = Math.abs(c - away);
+    if (d < minShift) continue;
+    const score = d + (Math.sign(c - away) === farDir ? 120 : 0) + Math.random() * 8;
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return Math.max(lo, Math.min(hi, best));
+}
+function spawnArcadeLaserTunnel(p, opts) {
+  opts = opts || {};
+  const layout = arcadeFormLayoutFoe();
+  const hw = layout.hw;
+  const reach = arcadePlayerReach() + arcadeFoeReach(layout.kind, layout.size)
+    + ((character === "bird" && layout.kind === "bird") ? 5 : 0);
+  const slack = opts.slack != null ? opts.slack : 18;
+  let step = opts.step != null ? opts.step : 16;
+  if (step !== 16) step = Math.max(28, Math.min(32, step)); // weave 28–32
+  let OFF = Math.max(72, hw + 40, reach + slack);
+  const minPath = reach + 10;
+  const offFloor = hw + 40;
+  // Slack may reduce OFF only down to hw+40. The lane flown is the visual
+  // clear 2*(OFF-hw); the dropBody hole is 2*(OFF-hw-14-1) inside it.
+  // Widen if that opening is under minPath. Abort when it cannot fit.
+  const visualOf = (off) => 2 * (off - hw);
+  const logicalOf = (off) => 2 * (off - hw - 14 - 1);
+  const playerPath = arcadePlayerReach() + 10;
+  if (visualOf(OFF) < minPath || logicalOf(OFF) < playerPath) {
+    OFF = Math.max(offFloor, minPath / 2 + hw, playerPath / 2 + hw + 14 + 1);
+  }
+  if (visualOf(OFF) < minPath || logicalOf(OFF) < playerPath) return false;
+  const inset = OFF + hw + 8;
+  if (W - 2 * inset < 24) return false;
+  // Each wave the hole is biased away from bird.x. Step walks toward that
+  // bias afterward; a walk that would slide under the taxi is discarded.
+  const minShift = Math.max(40, W * 0.18, reach * 1.1);
+  const away = (typeof bird.x === "number") ? bird.x : W * 0.5;
+  const desired = pickArcadeLaserTx(inset, away, minShift);
+  let Tx = desired;
+  if (arcadeFormTunnelX >= inset && arcadeFormTunnelX <= W - inset) {
+    const dir = Math.sign(desired - arcadeFormTunnelX) || (arcadeFormTunnelDir >= 0 ? 1 : -1);
+    let walked = arcadeFormTunnelX + dir * step;
+    if (walked < inset || walked > W - inset) walked = arcadeFormTunnelX;
+    walked = Math.max(inset, Math.min(W - inset, walked));
+    if (Math.abs(walked - away) >= minShift) Tx = walked;
+  }
+  Tx = Math.max(inset, Math.min(W - inset, Tx));
+  const half = OFF - hw - 14 - 1;
+  const gapL = Tx - half, gapR = Tx + half;
+  const lips = [Tx - OFF, Tx + OFF];
+  const before = obstacles.length;
+  let landed = 0;
+  // One lip on spawnY, the other trails 18..36 (which lip is random). Both ≤ 52.
+  const trailLip = 18 + Math.random() * 18;
+  const lipLift = Math.random() < 0.5 ? [0, trailLip] : [trailLip, 0];
+  for (let i = 0; i < lips.length; i++) {
+    const foe = arcadeFormFoe();
+    if (dropBody(p, lips[i], p.spawnY - lipLift[i], gapL, gapR, foe.kind, foe.size)) landed++;
+  }
+  if (landed < 2) return false;
+  // One in-beam crumb on the taxi line. Hole off so dropBody does not shove
+  // it onto a lip; then clamp into the inner 60% of the corridor.
+  const crumbFoe = arcadeFormFoe();
+  const crumbY = p.spawnY - (6 + Math.random() * 10);
+  if (dropBody(p, Tx, crumbY, -1000, -1000, crumbFoe.kind, crumbFoe.size)) {
+    const o = obstacles[obstacles.length - 1];
+    const cHw = bodyHw(o.kind, o.s);
+    const lo = Math.max(Tx - half * 0.6, cHw + 8);
+    const hi = Math.min(Tx + half * 0.6, W - cHw - 8);
+    if (lo <= hi) o.x = Math.max(lo, Math.min(hi, o.x));
+    else o.x = Math.max(cHw + 8, Math.min(W - cHw - 8, o.x));
+  }
+  // Outer brick is rare (2 lips + 1 crumb is the wave). No second-row crumbs.
+  let brickAt = null;
+  let brickRoom = 96;
+  for (const x of lips) {
+    const outward = x < Tx ? (x - hw) - 8 : (W - 8) - (x + hw);
+    if (outward < brickRoom) continue;
+    brickRoom = outward;
+    brickAt = x < Tx ? (hw + 8) : (W - hw - 8);
+  }
+  if (brickAt != null && Math.random() < 0.35) {
+    const brickLift = 8 + Math.random() * 12; // 8..20
+    const foe = arcadeFormFoe();
+    dropBody(p, brickAt, p.spawnY - brickLift, gapL, gapR, foe.kind, foe.size);
+  }
+  stampArcadeDivers(before);
+  arcadeFormTunnelDir = Tx >= away ? 1 : -1;
+  arcadeFormTunnelX = Tx;
+  lastGapW = gapR - gapL;
+  lastHole = Tx / W;
+  return true;
+}
+function pickArcadeGhostLip(gapW, side) {
+  const pad = 18;
+  const lo = pad + gapW / 2;
+  const hi = Math.max(lo + 4, W - pad - gapW / 2);
+  const jitter = Math.min(8, Math.max(2, (hi - lo) * 0.04));
+  const target = side > 0 ? hi - Math.random() * jitter : lo + Math.random() * jitter;
+  return Math.max(lo, Math.min(hi, target));
+}
+function arcadeGhostCrossMag(p, speedScale) {
+  const crossDy = Math.max(240, Math.min(320, H * 0.38));
+  const span = W * 0.36;
+  let mag = span * p.planeVy / crossDy * speedScale;
+  if (mag < 1.35) mag = 1.35;
+  if (mag > 3.6) mag = 3.6;
+  return mag;
+}
+function spawnArcadeGhostCross(p, opts) {
+  opts = opts || {};
+  const n = opts.n;
+  const step = opts.step;
+  const into = opts.into;
+  const hw = arcadeFormLayoutFoe().hw;
+  const lip = hw + 8 + 6;
+  const nPos = Math.ceil(n / 2);
+  const nNeg = n - nPos;
+  const majSign = Math.random() < 0.5 ? 1 : -1;
+  const dirs = [];
+  for (let i = 0; i < nPos; i++) dirs.push(majSign);
+  for (let i = 0; i < nNeg; i++) dirs.push(-majSign);
+  for (let i = dirs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = dirs[i];
+    dirs[i] = dirs[j];
+    dirs[j] = tmp;
+  }
+  const before = obstacles.length;
+  let landed = 0;
+  // ≥ ceil(n/2) bodies take full into (mid). The rest stay on the lip.
+  const midNeed = Math.ceil(n / 2);
+  let midUsed = 0;
+  for (let i = 0; i < n; i++) {
+    const specDir = dirs[i];
+    const slotsLeft = n - i;
+    const useMid = midUsed < midNeed && ((i % 2 === 0) || (midNeed - midUsed) >= slotsLeft);
+    const f = useMid ? into : Math.min(into, 0.08);
+    const edge = specDir > 0 ? lip : (W - lip);
+    const x = edge + (W * 0.5 - edge) * f;
+    const y = p.spawnY - i * step;
+    const foe = arcadeFormFoe();
+    if (!dropBody(p, x, y, -1000, -1000, foe.kind, foe.size)) continue;
+    if (useMid) midUsed++;
+    const o = obstacles[obstacles.length - 1];
+    let dir = specDir;
+    if (dir > 0 && o.x >= W * 0.5) dir = -1;
+    if (dir < 0 && o.x <= W * 0.5) dir = 1;
+    o.vx = dir * arcadeGhostCrossMag(p, opts.speed);
+    landed++;
+  }
+  if (landed < 2) {
+    obstacles.length = before;
+    return false;
+  }
+  lastHole = 0.5;
+  lastGapW = 0;
+  return true;
+}
 function spawnObs() {
+  // Perk just ended: skip this spawn so the next row is not a formation wall.
+  if (typeof window !== "undefined" && window.__arcadeFormJustExpired) {
+    window.__arcadeFormJustExpired = false;
+    return false;
+  }
+  const form = arcadeFormationId();
+  if (form) return spawnArcadeFormation(form);
   const p = pace();
   const birdLine = H * 0.72;
   const incoming = obstacles.filter(o => o.y < birdLine + 20);
@@ -1317,18 +3822,34 @@ function spawnObs() {
     if (obstacles.some(o => o.y < 100)) return false;
   }
   const gapW = p.gap;
-  const gapC = pickGap(gapW, lastHole * W, p);
+  // Contract: dropBody parks foe centers at least bodyHw+14 outside [gapL, gapR].
+  // Visible hole ≈ gapW + 28. Taxi draws at 84, so leftover ≥ (147+2)+28-84 = 93px
+  // at the tightest Future step — taxi + drawn foe bodies stay a passable lane.
+  // All themes use pickGap + edge + futureMix (no classic weave). Theme/character
+  // are cosmetics only; flight path is Future's. Rollback: git branch rollback/pre-theme-port-tf30
+  const gapC = (futureGapPhase === "edge")
+    ? pickFutureEdgeGap(gapW)
+    : pickGap(gapW, lastHole * W, p);
   const gapL = gapC - gapW / 2;
   const gapR = gapC + gapW / 2;
   const y = p.spawnY;
-  fillSide(p, 8, gapL, y, gapL, gapR, -1);
-  fillSide(p, gapR, W - 8, y, gapL, gapR, 1);
+  let leftWant = null;
+  let rightWant = null;
+  if (futurePack3()) {
+    const mix = futureMix(gapL, gapR);
+    leftWant = mix.left;
+    rightWant = mix.right;
+  }
+  fillSide(p, 8, gapL, y, gapL, gapR, -1, leftWant);
+  fillSide(p, gapR, W - 8, y, gapL, gapR, 1, rightWant);
   lastHole = gapC / W;
+  lastGapW = gapW;
+  advanceFutureGapPhase();
   return true;
 }
 function burst(label) {
   cheer = { text: label, t: 0 };
-  const colors = ["#fa2121", "#9f77fc", "#ffd84a", "#7ad7ff", "#ffffff", "#111111"];
+  const colors = ["#ff3a3a", "#ff8a2b", "#ffd84a", "#5ad87a", "#4db8ff", "#c08cff", "#ffffff"];
   for (let i = 0; i < 64; i++) {
     bits.push({
       x: W * 0.5,
@@ -1352,7 +3873,7 @@ function drawCheer() {
     ctx.restore();
   }
   if (cheer && cheer.t < 90) {
-    ctx.fillStyle = "#1a1a1a";
+    ctx.fillStyle = ink();
     ctx.font = "700 42px ui-sans-serif, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(cheer.text, W / 2, H * 0.32);
@@ -1408,14 +3929,30 @@ function circleHit(ax, ay, ar, bx, by, br) {
   const lim = ar + br;
   return dx * dx + dy * dy < lim * lim;
 }
+function foeHitR(o) {
+  const s = o.s || 68;
+  // Cabin/fuselage fair near-miss (2026-09-18 false-hit gap).
+  // Circles hug opaque body, not flame jets / thruster trails.
+  // FX-only visuals; collider ignores arcadeFlame/smoke.
+  if (o.kind === "airplane") return s * 0.16;
+  if (o.kind === "flyingcar") return s * 0.14;
+  if (o.kind === "meteor") return s * 0.32;
+  return (o.s || 64) * 0.24; // bird/foe opaque body
+}
 function hit(o) {
-  // Keep UFO hit footprint comparable to the thin bird line (~22).
-  const pr = 22;
-  if (o.kind === "meteor" || o.kind === "foe") {
-    const orad = o.kind === "meteor" ? (o.s || 68) * 0.32 : (o.s || 64) * 0.3;
-    return circleHit(bird.x, bird.y, pr, o.x, o.y, orad);
+  // Taxi 20 is a notch tighter than the bird-line 22 — still a real
+  // cabin, not a needle. UFO / bird keep 22.
+  const pr = character === "flytaxi" ? 20 : 22;
+  if (o.kind === "flyingcar") {
+    // Nose-down sprite: thrusters at top, nose toward +y. Sprite center
+    // is thruster-biased; collide against cabin (offset toward nose).
+    const fy = o.y + (o.s || 76) * 0.10;
+    return circleHit(bird.x, bird.y, pr, o.x, fy, foeHitR(o));
   }
-  if (character === "ufo") {
+  if (o.kind === "meteor" || o.kind === "foe" || o.kind === "airplane") {
+    return circleHit(bird.x, bird.y, pr, o.x, o.y, foeHitR(o));
+  }
+  if (character === "ufo" || character === "flytaxi") {
     if (o.kind === "plane") return circleHit(bird.x, bird.y, pr, o.x, o.y, 18);
     return circleHit(bird.x, bird.y, pr, o.x, o.y, (o.s || 78) * 0.28);
   }
@@ -1469,19 +4006,70 @@ function drawMenu() {
   ctx.closePath();
   ctx.stroke();
   ctx.font = "600 22px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText("start", b.x + b.w / 2 + 10, b.y + 36);
-  drawSketchBtn(menuBtn(0), "options");
-  drawSketchBtn(menuBtn(1), "store");
+  ctx.fillText("Start", b.x + b.w / 2 + 10, b.y + 36);
+  drawSketchBtn(menuBtn(0), "Options");
+  drawSketchBtn(menuBtn(1), "Store");
+  drawRanksCorner(ranksCornerBox());
   ctx.textAlign = "left";
 }
-function drawSketchBtn(b, label) {
+function drawRanksCorner(b) {
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.fillStyle = isDarkTheme() ? "rgba(7, 4, 18, 0.58)" : "rgba(255, 255, 255, 0.48)";
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(b.x, b.y, b.w, b.h, 10);
+  else ctx.rect(b.x, b.y, b.w, b.h);
+  ctx.fill();
+  ctx.strokeStyle = ink();
+  ctx.fillStyle = ink();
+  ctx.lineWidth = 2;
+  sketchRound(b.x, b.y, b.w, b.h);
+  const base = b.y + b.h - 11;
+  const left = b.x + 8;
+  const gap = 9;
+  const bw = 7;
+  const hs = [10, 14, 18];
+  ctx.lineWidth = 1.7;
+  for (let i = 0; i < 3; i++) {
+    const x = left + i * gap;
+    ctx.beginPath();
+    ctx.moveTo(x, base);
+    ctx.lineTo(x + 0.6, base - hs[i]);
+    ctx.lineTo(x + bw, base - hs[i] + 1);
+    ctx.lineTo(x + bw - 0.4, base);
+    ctx.stroke();
+  }
+  const sx = left + 2 * gap + bw / 2;
+  const sy = base - hs[2] - 6;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sx - 4, sy + 1);
+  ctx.quadraticCurveTo(sx - 1, sy - 4, sx + 4, sy);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx - 1, sy);
+  ctx.quadraticCurveTo(sx + 1, sy - 5, sx + 5, sy - 2);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawSketchBtn(b, label, sub) {
   ctx.strokeStyle = ink();
   ctx.fillStyle = ink();
   ctx.lineWidth = 2.2;
   sketchRound(b.x, b.y, b.w, b.h);
-  ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(label, b.x + b.w / 2, b.y + 30);
+  ctx.textBaseline = "middle";
+  if (sub) {
+    ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2 - 8);
+    ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(sub, b.x + b.w / 2, b.y + b.h / 2 + 12);
+  } else {
+    ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
+  }
+  ctx.textBaseline = "alphabetic";
 }
 function backBox() {
   return { x: 16, y: 18, w: 84, h: 36 };
@@ -1539,7 +4127,12 @@ function drawThemeShot(th, r) {
   ctx.fillStyle = g;
   ctx.fillRect(shot.x, shot.y, shot.w, shot.h);
   const inkc = th.ink || "#1a1a1a";
-  if (th.space) {
+  if (th.future) {
+    if (!drawImageCover(storeIconFutureImg, shot.x, shot.y, shot.w, shot.h)) {
+      ctx.fillStyle = "#120a28";
+      ctx.fillRect(shot.x, shot.y, shot.w, shot.h);
+    }
+  } else if (th.space) {
     ctx.fillStyle = cream;
     for (let i = 0; i < 18; i++) {
       const sx = shot.x + 12 + ((i * 53) % (shot.w - 24));
@@ -1611,7 +4204,9 @@ function drawThemeShot(th, r) {
     drawCloud(0, 0, 42);
     ctx.restore();
   }
-  if (th.space) {
+  if (th.future) {
+    /* store-icon-future already fills the shot */
+  } else if (th.space) {
     const fs = Math.min(56, shot.h * 0.34);
     const met = meteorImgs[0];
     if (met && met.complete && met.naturalWidth) {
@@ -1696,13 +4291,13 @@ function drawThemeShot(th, r) {
   ctx.textAlign = "left";
 }
 function drawOptions() {
-  ctx.fillStyle = (theme === "night" || theme === "space") ? "#05060a" : "#b7e4f6";
+  ctx.fillStyle = panelBg();
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = ink();
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.font = "700 28px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText("options", W / 2, 78);
+  ctx.fillText("Options", W / 2, 78);
   drawBack();
   optionLayout().forEach(item => {
     ctx.strokeStyle = ink();
@@ -1717,13 +4312,13 @@ function drawOptions() {
       ctx.fillText(item.label, item.x + 56, item.y + item.h / 2);
       ctx.textAlign = "right";
       ctx.font = "16px ui-sans-serif, system-ui, sans-serif";
-      ctx.fillText(optionOpen === item.id ? "−" : "+", item.x + item.w - 16, item.y + item.h / 2);
+      ctx.fillText(item.trailing || (item.id === "ranks" ? "open" : (optionOpen === item.id ? "−" : "+")), item.x + item.w - 16, item.y + item.h / 2);
       return;
     }
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.font = "600 16px ui-sans-serif, system-ui, sans-serif";
-    const mark = (item.action === "theme" && theme === item.id) || (item.action === "character" && character === item.id) ? "on" : "";
+    const mark = (item.action === "theme" && theme === item.id) || (item.action === "character" && character === item.id) || (item.action === "mode" && gameMode === item.id) ? "on" : "";
     ctx.fillText(item.name, item.x + 14, item.y + item.h / 2);
     if (mark) {
       ctx.textAlign = "right";
@@ -1733,8 +4328,93 @@ function drawOptions() {
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
 }
+function ranksSignInBox() {
+  const w = Math.min(260, W - 40);
+  const h = 46;
+  return { x: W / 2 - w / 2, y: H - 78, w, h };
+}
+function ranksListMetrics() {
+  const top = 156;
+  const bottom = H - 96;
+  const rowH = 32;
+  const rows = lbState.entries;
+  const viewH = Math.max(0, bottom - top);
+  const contentH = rows.length * rowH;
+  const maxScroll = Math.max(0, contentH - viewH);
+  return { top, bottom, rowH, viewH, contentH, maxScroll, rows };
+}
+function clampRanksScroll() {
+  const { maxScroll } = ranksListMetrics();
+  ranksScroll = Math.max(0, Math.min(maxScroll, ranksScroll));
+}
+function drawRanks() {
+  ctx.fillStyle = panelBg();
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = ink();
+  drawBack();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = "700 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("Ranks", W / 2, 78);
+  const best = localBestScore();
+  ctx.font = "600 16px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("your best  " + best, W / 2, 116);
+  if (lbState.playerRank) {
+    ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("global  #" + lbState.playerRank, W / 2, 138);
+  }
+  const { top, bottom, rowH, rows } = ranksListMetrics();
+  clampRanksScroll();
+  if (lbState.loading) {
+    ctx.textAlign = "center";
+    ctx.font = "15px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("loading…", W / 2, top + 36);
+  } else if (rows.length) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, top, W, bottom - top);
+    ctx.clip();
+    rows.forEach((row, i) => {
+      const y = top + i * rowH - ranksScroll;
+      if (y + rowH < top || y > bottom) return;
+      const mine = !!row.isLocal;
+      ctx.textAlign = "left";
+      ctx.font = (mine ? "700 " : "600 ") + "15px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillStyle = ink();
+      ctx.fillText(String(row.rank || i + 1), 28, y + 22);
+      const name = String(row.name || "player").slice(0, 18);
+      ctx.fillText(name, 58, y + 22);
+      ctx.textAlign = "right";
+      ctx.fillText(String(row.score || 0), W - 28, y + 22);
+    });
+    ctx.restore();
+    ctx.textAlign = "center";
+  } else {
+    ctx.textAlign = "center";
+    ctx.font = "15px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = ink();
+    ctx.fillText(lbState.signedIn || gcState.authenticated ? (lbState.message || "no global ranks yet") : "local best only", W / 2, top + 36);
+  }
+  const sign = ranksSignInBox();
+  const signedIn = !!(gcState.authenticated || lbState.signedIn);
+  ctx.fillStyle = ink();
+  ctx.textAlign = "center";
+  ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+  if (!signedIn) {
+    ctx.fillText("Sign in to Game Center", W / 2, sign.y - 28);
+    ctx.fillText("for global ranks", W / 2, sign.y - 12);
+  }
+  ctx.strokeStyle = ink();
+  ctx.lineWidth = 2;
+  sketchRound(sign.x, sign.y, sign.w, sign.h);
+  ctx.font = "600 16px ui-sans-serif, system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.fillText(signedIn ? "Game Center" : "Sign in", sign.x + sign.w / 2, sign.y + sign.h / 2);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+}
 function drawStoreTheme() {
-  ctx.fillStyle = (theme === "night" || theme === "space") ? "#05060a" : "#b7e4f6";
+  ctx.fillStyle = panelBg();
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = ink();
   ctx.textAlign = "center";
@@ -1767,7 +4447,9 @@ function drawCharacterShot(ch, r) {
   ctx.roundRect(shot.x, shot.y, shot.w, shot.h, 16);
   ctx.clip();
   const g = ctx.createLinearGradient(0, shot.y, 0, shot.y + shot.h);
-  if (theme === "space") {
+  if (theme === "future") {
+    g.addColorStop(0, "#0b0618"); g.addColorStop(1, "#120a28");
+  } else if (theme === "space") {
     g.addColorStop(0, "#05060a"); g.addColorStop(1, "#0a0c14");
   } else if (theme === "night") {
     g.addColorStop(0, "#12182a"); g.addColorStop(1, "#0c101c");
@@ -1779,7 +4461,16 @@ function drawCharacterShot(ch, r) {
   const ps = Math.min(96, shot.h * 0.7);
   const px = shot.x + shot.w / 2 - ps / 2;
   const py = shot.y + shot.h / 2 - ps / 2;
-  if (ch.id === "ufo") {
+  if (ch.id === "flytaxi") {
+    const taxi = imgReady(storeFlyTaxiCharacterImg)
+      ? storeFlyTaxiCharacterImg
+      : (imgReady(flyTaxiTiltOn.center) ? flyTaxiTiltOn.center : (imgReady(flyTaxiTiltOff.center) ? flyTaxiTiltOff.center : flyTaxiImgs[1]));
+    // tall taxi: fit by content box ~90% of shot (same idea as UFO ps but taller)
+    const tps = Math.min(shot.w * 0.92, shot.h * 0.90);
+    const tpx = shot.x + shot.w / 2 - tps / 2;
+    const tpy = shot.y + shot.h / 2 - tps / 2;
+    if (imgReady(taxi)) ctx.drawImage(taxi, tpx, tpy, tps, tps);
+  } else if (ch.id === "ufo") {
     const img = ufoImgs[1];
     if (img && img.complete && img.naturalWidth) ctx.drawImage(img, px, py, ps, ps);
     else {
@@ -1808,7 +4499,7 @@ function drawCharacterShot(ch, r) {
   ctx.textAlign = "left";
 }
 function drawStoreCharacters() {
-  ctx.fillStyle = (theme === "night" || theme === "space") ? "#05060a" : "#b7e4f6";
+  ctx.fillStyle = panelBg();
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = ink();
   ctx.textAlign = "center";
@@ -1857,15 +4548,31 @@ function drawBundleShot(bdl, r) {
     ctx.arc(mid + 18 + i * 10, shot.y + 18 + (i % 3) * 12, 1.4, 0, Math.PI * 2);
     ctx.fill();
   }
-  drawPlanetAt(shot.x + 36, shot.y + 40, 18, "gas", 3, 1.4);
-  drawPlanetAt(shot.x + shot.w - 40, shot.y + 48, 16, "ring", 1, 2.1);
-  const ps = Math.min(88, shot.h * 0.55);
-  const img = ufoImgs[1];
-  if (img && img.complete && img.naturalWidth) {
-    ctx.drawImage(img, shot.x + shot.w / 2 - ps / 2, shot.y + shot.h - ps - 6, ps, ps);
+  if (bdl.id === "futureflytaxi") {
+    const fut = ctx.createLinearGradient(0, shot.y, 0, shot.y + shot.h);
+    fut.addColorStop(0, "#0b0618");
+    fut.addColorStop(1, "#120a28");
+    ctx.fillStyle = fut;
+    ctx.fillRect(shot.x, shot.y, shot.w, shot.h);
+    if (imgReady(storeIconFutureImg)) {
+      drawImageCover(storeIconFutureImg, shot.x, shot.y, shot.w, shot.h);
+    }
+    const taxi = imgReady(storeFlyTaxiCharacterImg)
+      ? storeFlyTaxiCharacterImg
+      : (imgReady(flyTaxiTiltOn.center) ? flyTaxiTiltOn.center : flyTaxiTiltOff.center);
+    const ps = Math.min(90, shot.h * 0.62);
+    if (imgReady(taxi)) ctx.drawImage(taxi, shot.x + shot.w / 2 - ps / 2, shot.y + shot.h / 2 - ps / 2, ps, ps);
+  } else {
+    drawPlanetAt(shot.x + 36, shot.y + 40, 18, "gas", 3, 1.4);
+    drawPlanetAt(shot.x + shot.w - 40, shot.y + 48, 16, "ring", 1, 2.1);
+    const ps = Math.min(88, shot.h * 0.55);
+    const img = ufoImgs[1];
+    if (img && img.complete && img.naturalWidth) {
+      ctx.drawImage(img, shot.x + shot.w / 2 - ps / 2, shot.y + shot.h - ps - 6, ps, ps);
+    }
   }
   ctx.restore();
-  const offer = spaceUfoOffer();
+  const offer = bundleOffer(bdl.id);
   ctx.fillStyle = ink();
   ctx.font = "600 18px ui-sans-serif, system-ui, sans-serif";
   ctx.textAlign = "left";
@@ -1875,7 +4582,7 @@ function drawBundleShot(bdl, r) {
   ctx.textAlign = "left";
 }
 function drawStoreBundles() {
-  ctx.fillStyle = (theme === "night" || theme === "space") ? "#05060a" : "#b7e4f6";
+  ctx.fillStyle = panelBg();
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = ink();
   ctx.textAlign = "center";
@@ -1884,7 +4591,7 @@ function drawStoreBundles() {
   drawBack();
   BUNDLES.forEach((bdl, i) => {
     const r = bundleCard(i);
-    const offer = spaceUfoOffer();
+    const offer = bundleOffer(bdl.id);
     ctx.strokeStyle = ink();
     ctx.lineWidth = offer.label === "owned" ? 2.6 : 1.8;
     sketchRound(r.x, r.y, r.w, r.h);
@@ -1999,22 +4706,62 @@ function loop(now) {
     bird.y = H * 0.72;
   }
 
+  if (!(started && alive && pointer)) {
+    taxiDx *= 0.82;
+    if (Math.abs(taxiDx) < 0.35) {
+      taxiDx = 0;
+      taxiBank = 0;
+    }
+  }
+  if (taxiThrust > 0) taxiThrust -= 1;
+  if (!started && character === "flytaxi") {
+    bird.flap += dt * 0.55;
+    if (bird.flap > 110) { bird.flap = 0; bird.frame = (bird.frame + 1) % 4; }
+  }
+
   if (started && alive) {
     dist += dt * 0.07;
     bird.flap += dt;
     if (bird.flap > 90) { bird.flap = 0; bird.frame = (bird.frame + 1) % 4; }
     spawn += dt;
-    if (spawn > pace().every) {
+    const freezeSpawn = window.__arcadePreview || (window.__arcadeLiveCapture && !window.__arcadeDemoFormation && !window.__arcadeRealPaceCapture);
+    const everyNow = pace().every;
+    if (!freezeSpawn && spawn > everyNow) {
       if (spawnObs()) spawn = 0;
     }
     const score = Math.floor(dist);
+    tickArcadePerks(dt, score);
     while (nextMark < marks.length && score >= marks[nextMark]) {
       const n = marks[nextMark];
       burst((n / 1000) + "k");
       nextMark++;
     }
+    const arcadeDive = isArcade()
+      && arcadeActive
+      && (arcadeActive.id === "mg" || arcadeActive.id === "laser")
+      && !window.__arcadeCaptureScrub;
     for (const o of obstacles) {
       o.y += o.vy * (dt / 16);
+      if (o.vx) {
+        o.x += o.vx * (dt / 16);
+        const hw = bodyHw(o.kind, o.s);
+        const minX = hw + 8;
+        const maxX = W - hw - 8;
+        if (o.x <= minX) { o.x = minX; o.vx = 0; }
+        else if (o.x >= maxX) { o.x = maxX; o.vx = 0; }
+      }
+      if (arcadeDive && o.arcadeDiver) {
+        const dx = bird.x - o.x;
+        const steer = 0.04;
+        const vmax = 2.4;
+        let nudge = dx * steer;
+        if (nudge > vmax) nudge = vmax;
+        else if (nudge < -vmax) nudge = -vmax;
+        o.x += nudge * (dt / 16);
+        const hw = bodyHw(o.kind, o.s);
+        if (o.x < hw + 8) o.x = hw + 8;
+        else if (o.x > W - hw - 8) o.x = W - hw - 8;
+      }
       if (o.kind === "bird") {
         o.flap += dt;
         if (o.flap > 110) { o.flap = 0; o.frame = (o.frame + 1) % 4; }
@@ -2023,14 +4770,17 @@ function loop(now) {
       }
     }
     obstacles = obstacles.filter(o => o.y < H + 80);
+    tickArcadeCombat(dt);
     for (const o of obstacles) {
-      if (hit(o)) {
+      if (hit(o) && !window.__arcadeLiveCapture) {
+        if (arcadeActive && arcadeActive.id === "invincible" && performance.now() < arcadeActive.until) continue;
         if (Math.floor(dist) > best) {
           best = Math.floor(dist);
           localStorage.setItem("flyby-best", String(best));
         }
         noteDeath();
         alive = false;
+        if (isArcade() && !playerDeathFx) playerDeathFx = makeArcadePlayerDeathFx();
       }
     }
   }
@@ -2047,15 +4797,26 @@ function loop(now) {
   }
   if (cheer) cheer.t += 1;
 
+  tickArcadeDeathFx(dt);
+
   drawSky();
   for (const o of obstacles) {
     if (o.kind === "plane") drawPlane(o);
     else if (o.kind === "meteor") drawMeteor(o);
     else if (o.kind === "foe") drawFoeUfo(o);
+    else if (o.kind === "airplane") drawFoeAirplane(o);
+    else if (o.kind === "flyingcar") drawFoeFlyingCar(o);
     else drawOtherBird(o);
+    if (isArcade() && o.arcadeFlame) drawArcadeHitDamage(o);
+    if (isArcade() && o.arcadeHitFlash > 0) drawArcadeHurtFlash(o);
   }
+  drawArcadeFoeDeathFx();
+  drawArcadeAbsorbWorld();
   drawBird();
+  drawArcadePlayerDeathFx();
+  drawArcadeCombat();
   drawCheer();
+  drawArcadePerks();
 
   if (started || panel === "menu") {
     ctx.fillStyle = ink();
@@ -2067,12 +4828,13 @@ function loop(now) {
 
   if (started && !alive) drawDeath();
   else if (!started) {
-    if (panel === "options") drawOptions();
+  if (panel === "options") drawOptions();
     else if (panel === "store") drawStore();
     else if (panel === "store-theme") drawStoreTheme();
     else if (panel === "store-characters") drawStoreCharacters();
     else if (panel === "store-bundles") drawStoreBundles();
     else if (panel === "soon") drawSoon();
+    else if (panel === "ranks") drawRanks();
     else drawMenu();
   }
 
@@ -2093,13 +4855,251 @@ function loop(now) {
     ctx.textBaseline = "middle";
     ctx.fillText(buyToast.msg, W / 2, ty + th / 2);
     ctx.restore();
-    if (buyToast.t > 120) buyToast = null;
+    if (buyToast.t > 180) buyToast = null;
   }
 
   requestAnimationFrame(loop);
 }
 resize();
 requestAnimationFrame(loop);
+
+/** In-game orb preview: ?arcadePreview=sky|night|future|space (&hud=1 for active HUD) */
+(function arcadePreviewBoot() {
+  try {
+    const q = new URLSearchParams(location.search);
+    const themeId = q.get("arcadePreview");
+    if (!themeId) return;
+    window.__arcadePreview = true;
+    applyGameMode("arcade");
+    // unlock paid themes for preview captures (local only)
+    try {
+      ["night", "space", "future"].forEach(k => localStorage.setItem("flyby-own-" + k, "1"));
+    } catch (e) {}
+    if (typeof applyTheme === "function") applyTheme(themeId);
+    function seed() {
+      if (!W || !H) { requestAnimationFrame(seed); return; }
+      const d = ARCADE_PERK_DEFS[0];
+      arcadePickups = [{
+        id: d.id, label: d.label, color: d.color, duration: d.duration,
+        x: W * 0.5, y: H * 0.38, r: 22, vy: 0,
+        born: performance.now()
+      }];
+      obstacles = [];
+      if (q.get("hud") === "1") {
+        const d = defs[0];
+        arcadeActive = { id: d.id, label: d.label, color: d.color, until: performance.now() + 60000 };
+        arcadeSpareArmed = true;
+      }
+      started = true;
+      alive = true;
+      panel = "menu";
+      document.title = "arcadePreview:" + themeId + (q.get("hud") === "1" ? "+hud" : "");
+    }
+    // give sprite loads a beat, then seed
+    setTimeout(seed, 400);
+  } catch (err) {
+    console.error("arcadePreviewBoot", err);
+  }
+})();
+
+
+/** Live Arcade run capture: ?arcadeLive=sky|night|future|space — real spawn path, no seeded composites.
+ *  Combat stills: ?arcadeLive=THEME&demoCombat=1&perk=0 (mg) or perk=1 (laser). STYLE = arcadeFireStyle().
+ *  Ghost stills: ?arcadeLive=THEME&demoGhost=1&remain=MS (visual alpha only; default remain 3500).
+ *  Formations: ?arcadeLive=THEME&demoPhase2=mg|laser|ghost&formVariant=gallery|weave|slam
+ *  (missing/invalid formVariant rolls the perk pool) or demoCombat=1&perk=0|1|2&demoFormation=1.
+ *  Real perk pacing look clips: ?arcadeLive=THEME&realPace=1 = real maybeSpawnArcadePerk spacing + live foes. */
+(function arcadeLiveBoot() {
+  try {
+    const q = new URLSearchParams(location.search);
+    const themeId = q.get("arcadeLive");
+    if (!themeId) return;
+    window.__arcadeLiveCapture = true;
+    applyGameMode("arcade");
+    try {
+      ["night", "space", "future", "ufo", "flytaxi"].forEach(k => localStorage.setItem("flyby-own-" + k, "1"));
+    } catch (e) {}
+    if (typeof applyTheme === "function") applyTheme(themeId);
+    function go() {
+      if (!W || !H) { requestAnimationFrame(go); return; }
+      reset(); // real run (resetArcadeRunState + started/alive)
+      // Capture-only for real session look clips (?arcadeLive=THEME&realPace=1).
+      // Real maybeSpawnArcadePerk spacing + live foes; no seeded orb, no demo flags.
+      const realPace = q.get("realPace") === "1";
+      if (realPace) {
+        window.__arcadeRealPaceCapture = true;
+        if (themeId === "sky" || themeId === "night") applyCharacter("bird");
+        else if (themeId === "space") applyCharacter(q.get("character") || "ufo");
+        else if (themeId === "future") applyCharacter("flytaxi");
+        arcadePickups = [];
+        arcadeOrbPop = null;
+        arcadeBullets = [];
+        arcadeFireAt = 0;
+        // do NOT clear arcadePerkSpawn — keep resetArcadeRunState delay
+        // do NOT set any __arcadeDemo* flags
+        panel = "menu";
+        document.title = "arcadeLive:" + themeId + ":realPace";
+        return; // skip seeded-orb else
+      }
+      // one orb alone mid-path (matches Arcade Plan: never cluster for capture)
+      const which = Number(q.get("perk") || 0) || 0;
+      const d = ARCADE_PERK_DEFS[Math.max(0, Math.min(ARCADE_PERK_DEFS.length - 1, which))];
+      const phaseMs = Number(q.get("phase") || 0) || 0;
+      const demoPickup = q.get("demoPickup") === "1";
+      const demoCombat = q.get("demoCombat") === "1";
+      const demoGhost = q.get("demoGhost") === "1";
+      const phase2Raw = String(q.get("demoPhase2") || "").toLowerCase();
+      const phase2Id = phase2Raw === "mg" ? "mg"
+        : phase2Raw === "laser" ? "laser"
+        : phase2Raw === "ghost" ? "invincible" : "";
+      const demoFormation = q.get("demoFormation") === "1";
+      const wantForm = !!phase2Id || (demoFormation && demoCombat && d.id !== "spare");
+      // demoPickup: Classic flight line only (bird default W*0.5,H*0.72) — no path/formation shifts.
+      // Scrub with &t=MS (deterministic): orb falls toward bird, then absorb phases, then HUD.
+      // popAge windows: 0-200 approach, 200-360 shatter, 360-700 stream, 700-800 vanish, 800+ HUD.
+      // Phases: fall / approach / shatter / stream / vanish / hud
+      // (chrome virtual-time alone does not reliably advance rAF physics for clips)
+      if (wantForm) {
+        if (themeId === "sky" || themeId === "night") applyCharacter("bird");
+        else if (themeId === "space") applyCharacter(q.get("character") || "ufo");
+        else if (themeId === "future") applyCharacter("flytaxi");
+        arcadePickups = [];
+        arcadeOrbPop = null;
+        arcadePerkSpawn = 0;
+        arcadeBullets = [];
+        arcadeFireAt = 0;
+        obstacles = [];
+        const formDef = phase2Id
+          ? ARCADE_PERK_DEFS.find(def => def.id === phase2Id)
+          : d;
+        arcadeActive = {
+          id: formDef.id,
+          label: formDef.label,
+          color: formDef.color,
+          until: performance.now() + 600000
+        };
+        const fv = String(q.get("formVariant") || "").toLowerCase();
+        arcadeFormArm(formDef.id, { force: true, variant: fv || undefined });
+        const distRaw = q.get("dist");
+        const distNum = distRaw == null || distRaw === "" ? NaN : Number(distRaw);
+        dist = Number.isFinite(distNum) ? distNum : 2200;
+        spawn = 999;
+        window.__arcadeDemoFormation = phase2Raw || (d.id === "invincible" ? "ghost" : d.id);
+        document.title = (phase2Id
+          ? ("arcadeLive:" + themeId + ":demoPhase2:" + phase2Raw)
+          : ("arcadeLive:" + themeId + ":demoFormation:perk=" + which))
+          + (arcadeFormVariant ? (":" + arcadeFormVariant) : "");
+        panel = "menu";
+      } else if (demoPickup) {
+        window.__arcadeCaptureScrub = true;
+        const tMs = Math.max(0, Number(q.get("t") || 0) || 0);
+        const startY = H * 0.72 - 220;
+        const vySim = 2.8; // px per ~16ms tick (matches tickArcadePerks)
+        const birdY = H * 0.72;
+        const hitR = 22 + 26;
+        const travelMs = Math.max(1, ((birdY - hitR) - startY) / vySim * 16);
+        arcadePerkSpawn = 0;
+        panel = "menu";
+        let phaseName = "fall";
+        if (tMs < travelMs) {
+          const y = startY + vySim * (tMs / 16);
+          arcadePickups = [{
+            id: d.id, label: d.label, color: d.color, duration: d.duration,
+            x: W * 0.5, y, r: 22, vy: 0,
+            born: performance.now() - phaseMs - tMs
+          }];
+          arcadeOrbPop = null;
+          arcadeActive = null;
+        } else {
+          const popAge = tMs - travelMs;
+          const hitY = birdY - hitR;
+          arcadePickups = [];
+          phaseName = arcadeAbsorbPhaseAt(popAge).name;
+          if (popAge < ARCADE_ABSORB_MS) {
+            arcadeOrbPop = makeArcadeOrbPop(d.id, W * 0.5, hitY, d.color, {
+              t0: performance.now() - popAge,
+              scrubAge: popAge
+            });
+          } else {
+            arcadeOrbPop = null;
+          }
+          arcadeActive = {
+            id: d.id, label: d.label, color: d.color,
+            until: performance.now() + d.duration * 1000
+          };
+        }
+        document.title = "arcadeLive:" + themeId + ":demoPickup:t=" + tMs + ":" + phaseName;
+      } else if (demoCombat) {
+        window.__arcadeDemoCombat = true;
+        window.__arcadeDemoCombatPerk = which;
+        if (themeId === "sky" || themeId === "night") applyCharacter("bird");
+        else if (themeId === "space") applyCharacter(q.get("character") || "ufo");
+        else if (themeId === "future") applyCharacter("flytaxi");
+        arcadePickups = [];
+        arcadeOrbPop = null;
+        arcadePerkSpawn = 0;
+        arcadeBullets = [];
+        arcadeFireAt = 0;
+        arcadeActive = {
+          id: d.id, label: d.label, color: d.color,
+          until: performance.now() + 600000
+        };
+        const mildVy = 1.35;
+        obstacles = [];
+        for (let i = 0; i < 3; i++) {
+          const kind = (themeId === "night" && i === 1) ? "plane" : "bird";
+          const s = kind === "plane" ? 62 : 64;
+          obstacles.push({
+            kind, x: W * 0.5, y: H * (0.16 + i * 0.16), vy: mildVy, s,
+            frame: 0, flap: 0, arcadeHits: 0
+          });
+        }
+        panel = "menu";
+        document.title = "arcadeLive:" + themeId + ":demoCombat:perk=" + which + ":" + arcadeFireStyle();
+      } else if (demoGhost) {
+        window.__arcadeDemoGhost = true;
+        if (themeId === "sky" || themeId === "night") applyCharacter("bird");
+        else if (themeId === "space") applyCharacter(q.get("character") || "ufo");
+        else if (themeId === "future") applyCharacter("flytaxi");
+        arcadePickups = [];
+        arcadeOrbPop = null;
+        arcadePerkSpawn = 0;
+        arcadeBullets = [];
+        arcadeFireAt = 0;
+        obstacles = [];
+        const ghostDef = ARCADE_PERK_DEFS.find(def => def.id === "invincible");
+        const remainRaw = q.get("remain");
+        const remainNum = remainRaw == null || remainRaw === "" ? NaN : Number(remainRaw);
+        const remainMs = Number.isFinite(remainNum) ? remainNum : 3500;
+        arcadeActive = {
+          id: ghostDef.id,
+          label: ghostDef.label,
+          color: ghostDef.color,
+          until: performance.now() + remainMs
+        };
+        panel = "menu";
+        document.title = "arcadeLive:" + themeId + ":demoGhost:remain=" + remainMs;
+      } else {
+        const orbY = H * 0.38;
+        const orbVy = (q.get("freeze") === "1") ? 0 : 0.45;
+        arcadePickups = [{
+          id: d.id, label: d.label, color: d.color, duration: d.duration,
+          x: W * 0.5, y: orbY, r: 22,
+          vy: orbVy,
+          // phase= for capture GIFs (virtual-time alone can freeze sin phase)
+          born: performance.now() - phaseMs
+        }];
+        arcadePerkSpawn = 0;
+        panel = "menu";
+        document.title = "arcadeLive:" + themeId + ":n=" + arcadePickups.length;
+      }
+    }
+    setTimeout(go, 600);
+  } catch (err) {
+    console.error("arcadeLiveBoot", err);
+  }
+})();
+
 </script>
 </body>
 </html>
