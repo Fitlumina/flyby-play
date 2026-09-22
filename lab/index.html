@@ -138,8 +138,8 @@ function gameModeLabel() { return isArcade() ? "Arcade" : "Classic"; }
 const ARCADE_PERK_DEFS = Object.freeze([
   { id: "mg", label: "MG", duration: 15, color: "#f0a020", src: "art/sprites/arcade/machine-gun.png" },
   { id: "laser", label: "LASER", duration: 15, color: "#e04070", src: "art/sprites/arcade/laser.png" },
-  { id: "invincible", label: "GHOST", duration: 12, color: "#60d0ff", src: "art/sprites/arcade/ghost.png" },
-  { id: "spare", label: "1UP", duration: 0, color: "#50e090", scoreGate: 5500, src: "art/sprites/arcade/spare-life.png" }
+  { id: "invincible", label: "GHOST", duration: 12, color: "#60d0ff", scoreGate: 4000, src: "art/sprites/arcade/ghost.png" },
+  { id: "spare", label: "1UP", duration: 0, color: "#50e090", scoreGate: 4000, src: "art/sprites/arcade/spare-life.png" }
 ]);
 const arcadePerkImgs = Object.fromEntries(
   ARCADE_PERK_DEFS.map(d => [d.id, loadImg(d.src)])
@@ -164,13 +164,14 @@ let arcadeFormTunnelX = 0;
 let arcadeFormTunnelDir = 1;
 let arcadeFormGhostSide = 0;   // -1 left lip, +1 right lip
 // MG absorb break → barrage (PR #68). Peel window then dense full-track waves.
-const ARCADE_MG_BREAK_MS = 720;
-const ARCADE_MG_PEEL_VX = 3.2;
-const ARCADE_MG_SPEED_SCALE = 0.82;
-const ARCADE_MG_SOLO_VY = 1.16;
+const ARCADE_MG_BREAK_MS = 1100;
+const ARCADE_MG_PEEL_VX = 10;
+const ARCADE_MG_SPEED_SCALE = 0.70;
+const ARCADE_MG_SOLO_VY = 1.10;
 let arcadeMgBreakUntil = 0; // performance.now() deadline; 0 = inactive
 let arcadeSpareArmed = false;
 let arcadeSpareIFrameUntil = 0; // performance.now(); 0 = inactive
+let arcadeLastPerkId = ""; // last spawned perk id (anti ghost-back-to-back)
 let arcadePerkSpawn = 0;
 // After a pickup window: one perk, play it out, then much later next.
 // Timed MG/laser=15s, ghost=12s. Gap must exceed that + absorb + breathing room.
@@ -204,6 +205,7 @@ function resetArcadeRunState() {
   arcadeMgBreakUntil = 0;
   arcadeSpareArmed = false;
   arcadeSpareIFrameUntil = 0;
+  arcadeLastPerkId = "";
   arcadePerkSpawn = isArcade() ? 900 : 0; // delay before first single orb
   arcadePerkEndGraceUntil = 0;
   arcadeOrbPop = null;
@@ -297,12 +299,38 @@ function maybeSpawnArcadePerk(score) {
   const pool = ARCADE_PERK_DEFS.filter(d => {
     if (d.id === "spare") {
       // spare max 1: do not spawn another while armed
-      return score >= (d.scoreGate || 5500) && !arcadeSpareArmed;
+      return score >= (d.scoreGate || 4000) && !arcadeSpareArmed;
+    }
+    if (d.id === "invincible") {
+      // no ghost before 4k; no back-to-back ghosts (gap floors already space picks)
+      if (score < (d.scoreGate || 4000)) return false;
+      if (arcadeLastPerkId === "invincible") return false;
+      return true;
     }
     return true;
   });
   if (!pool.length) return;
-  const def = pool[Math.floor(Math.random() * pool.length)];
+  // Weighted pick: spare more common mid-run (~4–8k); ghost prefers later after gate.
+  const weights = pool.map(d => {
+    if (d.id === "spare") {
+      if (score < 8000) return 3; // solid mid-run chance
+      return 2;
+    }
+    if (d.id === "invincible") {
+      if (score < 7000) return 1; // prefer later after 4k gate
+      return 2;
+    }
+    return 2; // mg / laser
+  });
+  let total = 0;
+  for (const w of weights) total += w;
+  let r = Math.random() * total;
+  let def = pool[pool.length - 1];
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r <= 0) { def = pool[i]; break; }
+  }
+  arcadeLastPerkId = def.id;
   const x = W * (0.18 + Math.random() * 0.64);
   arcadePickups.push({
     id: def.id,
@@ -3035,7 +3063,7 @@ function arcadeFormPace(p) {
   if (arcadeFormationId() !== "mg") return p;
   return Object.assign({}, p, {
     planeVy: p.planeVy * ARCADE_MG_SPEED_SCALE,
-    every: Math.max(p.every, Math.round(p.every * 1.15)),
+    every: Math.max(p.every, Math.round(p.every * 1.28)),
     follow: p.follow >= 900 ? p.follow : Math.max(150, Math.round(p.follow * 0.9))
   });
 }
@@ -4926,20 +4954,22 @@ function loop(now) {
       && (arcadeActive.id === "mg" || arcadeActive.id === "laser")
       && !window.__arcadeCaptureScrub;
     if (arcadeMgBreakUntil && performance.now() >= arcadeMgBreakUntil) {
-      for (const o of obstacles) {
-        if (o.arcadeMgPeel) { o.vx = 0; o.arcadeMgPeel = false; }
-      }
+      // Break done: drop any peelers still on-field so barrage reforms clean
+      obstacles = obstacles.filter(o => !o.arcadeMgPeel);
       arcadeMgBreakUntil = 0;
     }
     for (const o of obstacles) {
       o.y += o.vy * (dt / 16);
       if (o.vx) {
         o.x += o.vx * (dt / 16);
-        const hw = bodyHw(o.kind, o.s);
-        const minX = hw + 8;
-        const maxX = W - hw - 8;
-        if (o.x <= minX) { o.x = minX; o.vx = 0; }
-        else if (o.x >= maxX) { o.x = maxX; o.vx = 0; }
+        // MG peel must exit playfield L/R — do not clamp to lane lips
+        if (!o.arcadeMgPeel) {
+          const hw = bodyHw(o.kind, o.s);
+          const minX = hw + 8;
+          const maxX = W - hw - 8;
+          if (o.x <= minX) { o.x = minX; o.vx = 0; }
+          else if (o.x >= maxX) { o.x = maxX; o.vx = 0; }
+        }
       }
       if (arcadeDive && o.arcadeDiver) {
         const dx = bird.x - o.x;
@@ -4960,7 +4990,15 @@ function loop(now) {
         o.rot = (o.rot || 0) + (o.spin || 0) * dt;
       }
     }
-    obstacles = obstacles.filter(o => o.y < H + 80);
+    obstacles = obstacles.filter(o => {
+      if (o.y >= H + 80) return false;
+      // MG peel: fully off-screen L/R exits the playfield
+      if (o.arcadeMgPeel) {
+        const hw = bodyHw(o.kind, o.s);
+        if (o.x < -hw - 40 || o.x > W + hw + 40) return false;
+      }
+      return true;
+    });
     tickArcadeCombat(dt);
     for (const o of obstacles) {
       if (hit(o) && !window.__arcadeLiveCapture) {
