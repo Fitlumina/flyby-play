@@ -203,6 +203,7 @@ function resetArcadeRunState() {
   arcadeFormTunnelDir = 1;
   arcadeFormGhostSide = 0;
   arcadeMgBreakUntil = 0;
+  arcadeLaserLean = 0;
   arcadeSpareArmed = false;
   arcadeSpareIFrameUntil = 0;
   arcadeLastPerkId = "";
@@ -377,15 +378,23 @@ function tickArcadePerks(dt, score) {
     arcadeFormTunnelX = 0;
     arcadeFormTunnelDir = 1;
     arcadeFormGhostSide = 0;
-    arcadeMgBreakUntil = 0;
     bird.y = H * 0.72;
     if (!arcadeCombatStickActive()) arcadeGrabOffY = null;
-    if (endingId === "mg" || endingId === "laser") {
-      // Brief clear window — KEEP for combat stick exit
+    if (endingId === "mg") {
+      // Same exit beat as absorb start: peel L/R off-screen — do NOT wipe/vanish
+      arcadeMgTriggerBreak();
+      arcadeBullets = [];
+      spawn = 0;
+      arcadePerkEndGraceUntil = performance.now() + ARCADE_PERK_END_GRACE_MS;
+    } else if (endingId === "laser") {
+      // Laser stick exit: brief clear window (MG-only peel brief)
+      arcadeMgBreakUntil = 0;
       obstacles = [];
       arcadeBullets = [];
       spawn = 0;
       arcadePerkEndGraceUntil = performance.now() + ARCADE_PERK_END_GRACE_MS;
+    } else {
+      arcadeMgBreakUntil = 0;
     }
     // ghost: no wipe, no grace — track already Classic
     window.__arcadeFormJustExpired = false;
@@ -729,6 +738,44 @@ function arcadeCombatNose() {
   const forward = (character === "bird") ? 0.20 : 0.36;
   return { x: bird.x, y: bird.y - tgt.drawS * forward };
 }
+/** Laser beam lean from drag (taxiDx). Neg=left, pos=right. Smoothed so whip reads, not jitters. */
+let arcadeLaserLean = 0;
+function arcadeLaserLeanTarget() {
+  const max = 0.78; // ~45° — clear adjacent lane columns, not only dead-ahead
+  const t = Math.max(-1, Math.min(1, taxiDx / 7.5));
+  return t * max;
+}
+/** Advance lean once per combat/draw beat — geom reads snapshot (no double-step). */
+function arcadeLaserTickLean() {
+  const tgt = arcadeLaserLeanTarget();
+  arcadeLaserLean = arcadeLaserLean * 0.72 + tgt * 0.28;
+  if (Math.abs(arcadeLaserLean) < 0.012 && Math.abs(tgt) < 0.02) arcadeLaserLean = 0;
+  return arcadeLaserLean;
+}
+/** Shared laser segment (nose → tip) for draw + hit. Uses current arcadeLaserLean. */
+function arcadeLaserBeamGeom() {
+  const nose = arcadeCombatNose();
+  const lean = arcadeLaserLean;
+  const len = Math.max(8, nose.y + 24);
+  const dx = Math.sin(lean);
+  const dy = -Math.cos(lean);
+  return { nose, lean, len, dx, dy, halfW: 7 };
+}
+function arcadeLaserBeamHitsFoe(o) {
+  const g = arcadeLaserBeamGeom();
+  const c = arcadeFoeCenter(o);
+  const fx = c.x - g.nose.x;
+  const fy = c.y - g.nose.y;
+  const proj = fx * g.dx + fy * g.dy;
+  if (proj < -20 || proj > g.len) return false;
+  const t = Math.max(0, Math.min(g.len, proj));
+  const px = g.nose.x + g.dx * t;
+  const py = g.nose.y + g.dy * t;
+  const r = foeHitR(o) + g.halfW;
+  const ddx = c.x - px;
+  const ddy = c.y - py;
+  return ddx * ddx + ddy * ddy <= r * r;
+}
 function arcadeFoeCenter(o) {
   if (o.kind === "flyingcar") return { x: o.x, y: o.y + (o.s || 76) * 0.10 };
   return { x: o.x, y: o.y };
@@ -820,14 +867,11 @@ function tickArcadeCombat(dt) {
     }
   }
   if (arcadeCombatCanFire() && arcadeActive.id === "laser") {
-    const nose = arcadeCombatNose();
-    const halfW = 7;
+    arcadeLaserTickLean();
     for (let j = obstacles.length - 1; j >= 0; j--) {
       const o = obstacles[j];
+      if (!arcadeLaserBeamHitsFoe(o)) continue;
       const c = arcadeFoeCenter(o);
-      const r = foeHitR(o);
-      if (c.x + r < nose.x - halfW || c.x - r > nose.x + halfW) continue;
-      if (c.y + r < -20 || c.y - r > nose.y) continue;
       spawnArcadeSpark(c.x, c.y, "#e8fbff", true);
       arcadeKillFoe(o);
     }
@@ -894,12 +938,14 @@ function drawArcadeLaserBeam() {
   const sketch = style === "sketch-sky" || style === "sketch-night";
   const img = style === "sketch-night" ? arcadeLaserBoltSketchNightImg
     : (style === "sketch-sky" ? arcadeLaserBoltSketchImg : arcadeLaserBoltImg);
-  const nose = arcadeCombatNose();
-  const len = Math.max(8, nose.y + 24);
+  // Lean already advanced in combat tick this frame; snapshot for draw match
+  const g = arcadeLaserBeamGeom();
+  const len = g.len;
   const w = 14;
   ctx.save();
-  ctx.translate(nose.x, nose.y);
-  ctx.rotate(-Math.PI / 2);
+  ctx.translate(g.nose.x, g.nose.y);
+  // Tip +X then −90° = up; +lean whips with drag (left/right)
+  ctx.rotate(-Math.PI / 2 + g.lean);
   ctx.globalCompositeOperation = "source-over";
   const pulse = 0.55 + 0.45 * arcadePulse01(performance.now());
   ctx.globalAlpha = pulse;
@@ -1479,13 +1525,29 @@ const PRODUCTS = {
   upgrade_flytaxi: "com.playflyby.game.upgrade.flytaxi",
   upgrade_future: "com.playflyby.game.upgrade.future"
 };
-function grantPlaytestFuture() {
-  if (localStorage.getItem("flyby-playtest-future-v1") === "1") return;
-  localStorage.setItem("flyby-own-future", "1");
-  localStorage.setItem("flyby-own-flytaxi", "1");
-  localStorage.setItem("flyby-playtest-future-v1", "1");
+/** Web lab ONLY — unlock full theme+character catalog for Carlos lab looks.
+ *  NEVER runs in native WKWebView / TestFlight (window.flybyHost injected at documentStart).
+ *  NEVER expand into production TF entitlement — ownership stays StoreKit → flybyOwned.
+ *  Gate: no flybyHost + (/lab path | localhost). */
+function isLabPlaytestHost() {
+  if (typeof window !== "undefined" && window.flybyHost) return false;
+  try {
+    const host = String(location.hostname || "").toLowerCase();
+    const path = String(location.pathname || "").toLowerCase();
+    if (path === "/lab" || path.indexOf("/lab/") === 0) return true;
+    if (host === "localhost" || host === "127.0.0.1") return true;
+  } catch (e) { return false; }
+  return false;
 }
-grantPlaytestFuture();
+function grantLabPlaytestCatalog() {
+  if (!isLabPlaytestHost()) return;
+  if (localStorage.getItem("flyby-lab-playtest-catalog-v1") === "1") return;
+  ["night", "space", "future", "ufo", "flytaxi"].forEach(id => {
+    localStorage.setItem("flyby-own-" + id, "1");
+  });
+  localStorage.setItem("flyby-lab-playtest-catalog-v1", "1");
+}
+grantLabPlaytestCatalog();
 function owns(id) {
   if (id === "sky" || id === "bird") return true;
   if (id === "spaceufo") return owns("space") && owns("ufo");
@@ -1602,7 +1664,7 @@ window.flybyOwned = function (state) {
   if (state.future || state.futureflytaxi) localStorage.setItem("flyby-own-future", "1");
   if (state.flytaxi || state.futureflytaxi) localStorage.setItem("flyby-own-flytaxi", "1");
   if (state.adfree) localStorage.setItem("flyby-own-adfree", "1");
-  grantPlaytestFuture();
+  // Lab catalog grant is web-lab-only (grantLabPlaytestCatalog) — never from native flybyOwned.
   // Re-apply saved prefs only — never force a theme/character or gate one by the other.
   applyTheme(localStorage.getItem("flyby-theme") || theme);
   applyCharacter(localStorage.getItem("flyby-character") || character);
