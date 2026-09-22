@@ -150,6 +150,8 @@ const arcadeLaserBoltImg = loadImg("art/sprites/arcade/laser-bolt-vibe-a.png");
 const arcadeMgBulletSketchImg = loadImg("art/sprites/arcade/mg-bullet-sketch.png");
 const arcadeLaserBoltSketchImg = loadImg("art/sprites/arcade/laser-bolt-sketch.png");
 const arcadeLaserBoltSketchNightImg = loadImg("art/sprites/arcade/laser-bolt-sketch-night.png");
+const arcadeFireStylePreviewSketchImg = loadImg("art/sprites/arcade/fire-style-preview-sketch.png");
+const arcadeFireStylePreviewNeonImg = loadImg("art/sprites/arcade/fire-style-preview-neon.png");
 let arcadePickups = [];
 let arcadeActive = null; // { id, label, color, until, pop } or null
 let arcadeFormSeenId = "";
@@ -1017,7 +1019,7 @@ function drawArcadeMgBullet(b) {
   }
   ctx.restore();
 }
-// SPRITE_SWAP_HOOK — Vibe A Neon Glow laser (laser-bolt-vibe-a), cyan. Tip +X along each rope segment.
+// SPRITE_SWAP_HOOK — Neon: vibe-a bolt stamps along rope. Sketch: continuous halo+core (no chopped bolt tiles).
 function drawArcadeLaserBeam() {
   const style = arcadeFireStyle();
   const sketch = style === "sketch-sky" || style === "sketch-night";
@@ -1037,36 +1039,47 @@ function drawArcadeLaserBeam() {
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = pulse;
-  ctx.strokeStyle = halo;
-  ctx.lineWidth = w * 1.8;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+  // Soft continuous halo for every style
+  ctx.strokeStyle = halo;
+  ctx.lineWidth = w * 1.8;
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
   for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
   ctx.stroke();
-  const hasImg = img && img.complete && img.naturalWidth;
-  if (hasImg) {
-    for (let i = 0; i < pts.length - 1; i++) {
-      const a = pts[i];
-      const b = pts[i + 1];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const segLen = Math.sqrt(dx * dx + dy * dy);
-      if (segLen < 0.5) continue;
-      ctx.save();
-      ctx.translate(a.x, a.y);
-      ctx.rotate(Math.atan2(dy, dx));
-      ctx.drawImage(img, 0, -w / 2, segLen + 2, w);
-      ctx.restore();
-    }
-  } else {
+  if (sketch) {
+    // Solid continuous core — do not tile sketch bolt stamps (reads chopped)
     ctx.strokeStyle = core;
     ctx.lineWidth = w * 0.44;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
+  } else {
+    const hasImg = img && img.complete && img.naturalWidth;
+    if (hasImg) {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const segLen = Math.sqrt(dx * dx + dy * dy);
+        if (segLen < 0.5) continue;
+        ctx.save();
+        ctx.translate(a.x, a.y);
+        ctx.rotate(Math.atan2(dy, dx));
+        ctx.drawImage(img, 0, -w / 2, segLen + 2, w);
+        ctx.restore();
+      }
+    } else {
+      ctx.strokeStyle = core;
+      ctx.lineWidth = w * 0.44;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }
@@ -4359,10 +4372,10 @@ function fireStyleChoiceBox(index) {
   const w = Math.min(280, W - 48);
   const gap = 18;
   const maxBlock = H - 108 - 16;
-  let h = 128;
-  if (h * 2 + gap > maxBlock) h = Math.max(100, Math.floor((maxBlock - gap) / 2));
+  let h = 156; // taller for bird+beam stills
+  if (h * 2 + gap > maxBlock) h = Math.max(112, Math.floor((maxBlock - gap) / 2));
   const block = h * 2 + gap;
-  let y0 = H * 0.34;
+  let y0 = H * 0.32;
   const minY = 108;
   if (y0 < minY) y0 = minY;
   const maxY = H - 16 - block;
@@ -4379,118 +4392,48 @@ function beginFromFireStyle(neon, e) {
   setArcadeNeonOn(!!neon);
   beginFreshRun(e);
 }
-function fireStylePreviewArt(neonChoice) {
-  if (!neonChoice) {
-    const nightSketch = theme === "night";
-    return {
-      mg: arcadeMgBulletSketchImg,
-      laser: nightSketch ? arcadeLaserBoltSketchNightImg : arcadeLaserBoltSketchImg,
-      sketch: true,
-      nightSketch: nightSketch
-    };
-  }
-  return {
-    mg: arcadeMgBulletImg,
-    laser: arcadeLaserBoltImg,
-    sketch: false,
-    nightSketch: false
-  };
-}
 function drawFireStylePreview(b, neonChoice) {
-  const art = fireStylePreviewArt(neonChoice);
   const wellX = b.x + 12, wellY = b.y + 40;
   const wellW = b.w - 24, wellH = b.h - 52;
   if (wellH < 28 || wellW < 40) return;
+  const img = neonChoice ? arcadeFireStylePreviewNeonImg : arcadeFireStylePreviewSketchImg;
   ctx.save();
   ctx.beginPath();
   ctx.rect(wellX, wellY, wellW, wellH);
   ctx.clip();
-
-  const mid = wellX + wellW * 0.46;
-  const mgCx = wellX + wellW * 0.23;
-  const mgCy = wellY + wellH / 2;
-  const disc = Math.min(48, wellH - 6);
-  ctx.fillStyle = "#f4efe4";
-  ctx.beginPath();
-  ctx.arc(mgCx, mgCy, disc / 2, 0, Math.PI * 2);
-  ctx.fill();
-
-  const chipX = mid + 6;
-  const chipW = wellX + wellW - chipX;
-  ctx.fillStyle = art.sketch
-    ? (art.nightSketch ? "#12182a" : "#e7f6fd")
-    : "#070b14";
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(chipX, wellY + 4, chipW, wellH - 8, 8);
-  else ctx.rect(chipX, wellY + 4, chipW, wellH - 8);
-  ctx.fill();
-
-  // MG — same transform as drawArcadeMgBullet, scaled for the card.
-  const s = Math.min(44, wellH - 8);
-  ctx.save();
-  ctx.translate(mgCx, mgCy);
-  ctx.rotate(-Math.PI / 2);
-  ctx.globalCompositeOperation = "source-over";
-  const halo = ctx.createRadialGradient(0, 0, 1, 0, 0, s * 0.62);
-  if (art.sketch) {
-    halo.addColorStop(0, "rgba(32,28,24,0.28)");
-    halo.addColorStop(0.55, "rgba(32,28,24,0.10)");
-    halo.addColorStop(1, "rgba(32,28,24,0)");
+  // Plate behind still (readable while image loads)
+  ctx.fillStyle = neonChoice ? "#070b14" : "#e7f6fd";
+  ctx.fillRect(wellX, wellY, wellW, wellH);
+  if (img && img.complete && img.naturalWidth) {
+    // Cover-fit bird+beam still into the well
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const scale = Math.max(wellW / iw, wellH / ih);
+    const dw = iw * scale, dh = ih * scale;
+    const dx = wellX + (wellW - dw) / 2;
+    // Bottom-align so the bird stays in frame when the well is short
+    const dy = wellY + (wellH - dh);
+    ctx.drawImage(img, dx, dy, dw, dh);
   } else {
-    halo.addColorStop(0, "rgba(255,176,48,0.42)");
-    halo.addColorStop(0.55, "rgba(240,160,32,0.16)");
-    halo.addColorStop(1, "rgba(240,160,32,0)");
-  }
-  ctx.fillStyle = halo;
-  ctx.beginPath();
-  ctx.arc(0, 0, s * 0.62, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(0, 0, s * 0.46, s * 0.30, 0, 0, Math.PI * 2);
-  ctx.clip();
-  if (art.mg && art.mg.complete && art.mg.naturalWidth) {
-    ctx.drawImage(art.mg, -s / 2, -s / 2, s, s);
-  } else {
-    ctx.fillStyle = art.sketch ? "#201c18" : "#f0a020";
+    // Fallback continuous beam (no bare ammo sprites)
+    const lx = wellX + wellW / 2;
+    const top = wellY + 8;
+    const bot = wellY + wellH - 10;
+    const halo = neonChoice ? "rgba(64,224,255,0.22)" : "rgba(32,28,24,0.14)";
+    const core = neonChoice ? "rgba(64,224,255,0.95)" : "rgba(32,28,24,0.90)";
+    ctx.strokeStyle = halo;
+    ctx.lineWidth = 18;
+    ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.arc(2, 0, s * 0.16, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
-
-  // Laser — one segment, tip up (same PNG orientation as combat rope stamps).
-  const length = Math.max(36, wellH - 12);
-  const thick = 22;
-  const lx = chipX + chipW / 2;
-  const ly = wellY + wellH - 6;
-  const laserHalo = art.sketch
-    ? (art.nightSketch ? "rgba(230,211,176,0.30)" : "rgba(32,28,24,0.14)")
-    : "rgba(64,224,255,0.22)";
-  const laserCore = art.sketch
-    ? (art.nightSketch ? "rgba(230,211,176,0.95)" : "rgba(32,28,24,0.90)")
-    : "rgba(64,224,255,0.95)";
-  ctx.save();
-  ctx.translate(lx, ly);
-  ctx.rotate(-Math.PI / 2);
-  ctx.strokeStyle = laserHalo;
-  ctx.lineWidth = thick * 1.8;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(length, 0);
-  ctx.stroke();
-  if (art.laser && art.laser.complete && art.laser.naturalWidth) {
-    ctx.drawImage(art.laser, 0, -thick / 2, length, thick);
-  } else {
-    ctx.strokeStyle = laserCore;
-    ctx.lineWidth = thick * 0.44;
+    ctx.moveTo(lx, bot);
+    ctx.lineTo(lx, top);
+    ctx.stroke();
+    ctx.strokeStyle = core;
+    ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(length, 0);
+    ctx.moveTo(lx, bot);
+    ctx.lineTo(lx, top);
     ctx.stroke();
   }
-  ctx.restore();
-
   ctx.restore();
 }
 function drawFireStyle() {
