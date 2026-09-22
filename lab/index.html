@@ -164,6 +164,7 @@ let arcadeFormTunnelX = 0;
 let arcadeFormTunnelDir = 1;
 let arcadeFormGhostSide = 0;   // -1 left lip, +1 right lip
 let arcadeSpareArmed = false;
+let arcadeSpareIFrameUntil = 0; // performance.now(); 0 = inactive
 let arcadePerkSpawn = 0;
 // After a pickup window: one perk, play it out, then much later next.
 // Timed MG/laser=15s, ghost=12s. Gap must exceed that + absorb + breathing room.
@@ -195,6 +196,7 @@ function resetArcadeRunState() {
   arcadeFormTunnelDir = 1;
   arcadeFormGhostSide = 0;
   arcadeSpareArmed = false;
+  arcadeSpareIFrameUntil = 0;
   arcadePerkSpawn = isArcade() ? 900 : 0; // delay before first single orb
   arcadePerkEndGraceUntil = 0;
   arcadeOrbPop = null;
@@ -242,7 +244,27 @@ function applyArcadePickup(p) {
     until: performance.now() + p.duration * 1000 + ARCADE_ABSORB_MS
   };
   arcadeFormArm(p.id, { force: true });
+  if (p.id === "invincible") {
+    // Ghost is Classic X-only — drop any MG/laser free-Y immediately
+    bird.y = H * 0.72;
+    arcadeGrabOffY = null;
+  }
   showBuyToast(p.label);
+}
+/** In-run spare consume: clear near threat, stay alive, keep dist/score. Not a death. */
+function consumeArcadeSpareLife() {
+  arcadeSpareArmed = false;
+  // Clear immediate lethal geometry so next-frame re-hit cannot chain-kill
+  obstacles = [];
+  arcadeBullets = []; // leftover bolts shouldn't matter; cheap clear
+  playerDeathFx = null;
+  bits = [];
+  // Snap to Classic flight line (spare is never free-2D)
+  bird.y = H * 0.72;
+  if (!arcadeTimedPerkActive()) arcadeGrabOffY = null;
+  // Brief post-consume i-frames so same-pack foes don't re-kill
+  arcadeSpareIFrameUntil = performance.now() + 900;
+  showBuyToast("Spare life!");
 }
 /** Visual only: Ghost perk fades the playable. Last 2.8s square-flashes opaque ↔ 0.55, faster as it ends. */
 const ARCADE_GHOST_ALPHA = 0.55;
@@ -311,6 +333,7 @@ function tickArcadePerks(dt, score) {
     return false;
   });
   if (arcadeActive && performance.now() >= arcadeActive.until) {
+    const endingId = arcadeActive.id;
     arcadeActive = null;
     arcadeFormSeenId = "";
     arcadeFormVariant = "";
@@ -318,15 +341,17 @@ function tickArcadePerks(dt, score) {
     arcadeFormTunnelX = 0;
     arcadeFormTunnelDir = 1;
     arcadeFormGhostSide = 0;
-    // Realign to Classic lane (keep X; snap Y)
     bird.y = H * 0.72;
-    if (!arcadeTimedPerkActive()) arcadeGrabOffY = null;
-    // Brief clear window
-    obstacles = [];           // wipe on-screen foes so player isn't mid-formation
-    arcadeBullets = [];       // leftover MG bolts
-    spawn = 0;                // restart spawn clock cleanly
-    arcadePerkEndGraceUntil = performance.now() + ARCADE_PERK_END_GRACE_MS;
-    window.__arcadeFormJustExpired = false; // superseded by grace timer
+    if (!arcadeCombatStickActive()) arcadeGrabOffY = null;
+    if (endingId === "mg" || endingId === "laser") {
+      // Brief clear window — KEEP for combat stick exit
+      obstacles = [];
+      arcadeBullets = [];
+      spawn = 0;
+      arcadePerkEndGraceUntil = performance.now() + ARCADE_PERK_END_GRACE_MS;
+    }
+    // ghost: no wipe, no grace — track already Classic
+    window.__arcadeFormJustExpired = false;
   }
   if (arcadeOrbPop && performance.now() - arcadeOrbPop.t0 > ARCADE_ABSORB_MS) arcadeOrbPop = null;
 }
@@ -693,7 +718,7 @@ function spawnArcadeSpark(x, y, color, heavy) {
     });
   }
 }
-const ARCADE_MG_CD = 90; // ~11.1 shots/s so dense Arcade packs stay clearable
+const ARCADE_MG_CD = 70; // was 90 (~11.1/s); ~14.3/s — snappier, still readable
 function arcadeTryFireMg(now) {
   if (!arcadeCombatCanFire() || arcadeActive.id !== "mg") return;
   if (now - arcadeFireAt < ARCADE_MG_CD) return;
@@ -1346,14 +1371,20 @@ function setX(clientX) {
 /** Arcade stick-style grab: offset from bird at pointerdown. Null = no grab. */
 let arcadeGrabOffX = null;
 let arcadeGrabOffY = null;
-/** Spare-only is not timed — X-only on the Classic flight line. */
+/** Any timed perk still inside its window (MG, laser, or ghost). */
 function arcadeTimedPerkActive() {
   return !!(arcadeActive && performance.now() < arcadeActive.until);
+}
+/** Free 2D stick: MG/laser only. Ghost + spare + default = Classic X-only. */
+function arcadeCombatStickActive() {
+  return !!(arcadeActive
+    && performance.now() < arcadeActive.until
+    && (arcadeActive.id === "mg" || arcadeActive.id === "laser"));
 }
 function beginArcadeGrab(touchX, touchY) {
   // NO-ZIP: offset from current bird so first move continues from here
   arcadeGrabOffX = touchX - bird.x;
-  arcadeGrabOffY = arcadeTimedPerkActive() ? (touchY - bird.y) : null;
+  arcadeGrabOffY = arcadeCombatStickActive() ? (touchY - bird.y) : null;
 }
 function applyArcadeDrag(touchX, touchY) {
   if (arcadeGrabOffX == null) {
@@ -1363,15 +1394,14 @@ function applyArcadeDrag(touchX, touchY) {
   const nx = Math.max(40, Math.min(W - 40, touchX - arcadeGrabOffX));
   noteTaxiDx(nx);
   bird.x = nx;
-  if (arcadeTimedPerkActive()) {
-    // free 2D stick while MG/laser/ghost active
+  if (arcadeCombatStickActive()) {
     if (arcadeGrabOffY == null) arcadeGrabOffY = touchY - bird.y;
     const ny = Math.max(40, Math.min(H - 40, touchY - arcadeGrabOffY));
     bird.y = ny;
   } else {
-    // Arcade default track: Classic flight line only
+    // Ghost, spare, and default: Classic flight line (no 360)
     bird.y = H * 0.72;
-    arcadeGrabOffY = null; // ignore Y grab
+    arcadeGrabOffY = null;
   }
 }
 function clearArcadeGrab() {
@@ -4817,6 +4847,11 @@ function loop(now) {
     for (const o of obstacles) {
       if (hit(o) && !window.__arcadeLiveCapture) {
         if (arcadeActive && arcadeActive.id === "invincible" && performance.now() < arcadeActive.until) continue;
+        if (arcadeSpareIFrameUntil && performance.now() < arcadeSpareIFrameUntil) continue;
+        if (isArcade() && arcadeSpareArmed) {
+          consumeArcadeSpareLife();
+          break; // one consume per tick; score (dist) untouched; no noteDeath
+        }
         if (Math.floor(dist) > best) {
           best = Math.floor(dist);
           localStorage.setItem("flyby-best", String(best));
