@@ -163,6 +163,12 @@ let arcadeFormSweepSide = 0;   // mg: -1 pack on the left, +1 pack on the right
 let arcadeFormTunnelX = 0;
 let arcadeFormTunnelDir = 1;
 let arcadeFormGhostSide = 0;   // -1 left lip, +1 right lip
+// MG absorb break → barrage (PR #68). Peel window then dense full-track waves.
+const ARCADE_MG_BREAK_MS = 720;
+const ARCADE_MG_PEEL_VX = 3.2;
+const ARCADE_MG_SPEED_SCALE = 0.82;
+const ARCADE_MG_SOLO_VY = 1.16;
+let arcadeMgBreakUntil = 0; // performance.now() deadline; 0 = inactive
 let arcadeSpareArmed = false;
 let arcadeSpareIFrameUntil = 0; // performance.now(); 0 = inactive
 let arcadePerkSpawn = 0;
@@ -195,6 +201,7 @@ function resetArcadeRunState() {
   arcadeFormTunnelX = 0;
   arcadeFormTunnelDir = 1;
   arcadeFormGhostSide = 0;
+  arcadeMgBreakUntil = 0;
   arcadeSpareArmed = false;
   arcadeSpareIFrameUntil = 0;
   arcadePerkSpawn = isArcade() ? 900 : 0; // delay before first single orb
@@ -244,6 +251,7 @@ function applyArcadePickup(p) {
     until: performance.now() + p.duration * 1000 + ARCADE_ABSORB_MS
   };
   arcadeFormArm(p.id, { force: true });
+  if (p.id === "mg") arcadeMgTriggerBreak();
   if (p.id === "invincible") {
     // Ghost is Classic X-only — drop any MG/laser free-Y immediately
     bird.y = H * 0.72;
@@ -341,6 +349,7 @@ function tickArcadePerks(dt, score) {
     arcadeFormTunnelX = 0;
     arcadeFormTunnelDir = 1;
     arcadeFormGhostSide = 0;
+    arcadeMgBreakUntil = 0;
     bird.y = H * 0.72;
     if (!arcadeCombatStickActive()) arcadeGrabOffY = null;
     if (endingId === "mg" || endingId === "laser") {
@@ -3021,7 +3030,15 @@ function pace() {
     gap: raw.gap + 2
   });
 }
-function arcadeFormPace(p) { return p; }
+function arcadeFormPace(p) {
+  // MG-only: slow the sheet so 2-hit clear keeps up with barrage density.
+  if (arcadeFormationId() !== "mg") return p;
+  return Object.assign({}, p, {
+    planeVy: p.planeVy * ARCADE_MG_SPEED_SCALE,
+    every: Math.max(p.every, Math.round(p.every * 1.15)),
+    follow: p.follow >= 900 ? p.follow : Math.max(150, Math.round(p.follow * 0.9))
+  });
+}
 function pickGap(gapW, away, p) {
   const pad = 18;
   const lo = pad + gapW / 2;
@@ -3389,7 +3406,7 @@ function arcadeCadenceBlocked(p) {
   // Soft-cap delays the next wave (blocked → retry). Ghost stays uncapped.
   const id = arcadeFormationId();
   const n = arcadeOnScreenFoes();
-  if (id === "mg" && n >= 10) return true;
+  if (id === "mg" && n >= 12) return true;
   if (id === "laser" && n >= 6) return true;
   const birdLine = H * 0.72;
   const incoming = obstacles.filter(o => o.y < birdLine + 20);
@@ -3501,9 +3518,12 @@ function spawnArcadeSameTrack(p, opts) {
 }
 function spawnArcadeFormation(id) {
   arcadeFormArm(id);
-  const p = pace(); // Classic only — NOT arcadeFormPace(pace())
-  if (id === "invincible") return spawnArcadeSameTrack(p, { tight: false });
-  if (id === "mg" || id === "laser") return spawnArcadeSameTrack(p, { tight: true });
+  if (id === "invincible") return spawnArcadeSameTrack(pace(), { tight: false });
+  if (id === "laser") return spawnArcadeSameTrack(pace(), { tight: true }); // UNCHANGED
+  if (id === "mg") {
+    if (arcadeMgBreakUntil && performance.now() < arcadeMgBreakUntil) return false;
+    return spawnArcadeMgBarrage(arcadeFormPace(pace()));
+  }
   return false;
 }
 function arcadeFormStaggerLift(i) {
@@ -3524,6 +3544,98 @@ function arcadeMgJitterNonEdge(xs, step, floorsOk) {
     xs[i] = base + sign * 6;
     if (floorsOk()) continue;
     xs[i] = base;
+  }
+}
+
+/** MG absorb: fighter peel L/R out of the Classic lane pack, then barrage owns the track. */
+function arcadeMgTriggerBreak() {
+  const now = performance.now();
+  arcadeMgBreakUntil = now + ARCADE_MG_BREAK_MS;
+  const mid = W * 0.5;
+  for (let i = 0; i < obstacles.length; i++) {
+    const o = obstacles[i];
+    if (o.y <= -60 || o.y >= H + 40) continue;
+    const dir = o.x < mid ? -1 : 1;
+    o.vx = dir * ARCADE_MG_PEEL_VX;
+    o.arcadeMgPeel = true;
+    o.arcadeDiver = false;
+    o.arcadeSolo = false;
+    if (typeof o.vy === "number") o.vy *= ARCADE_MG_SPEED_SCALE;
+  }
+}
+/** Dense full-track MG sheet — mid not a free coast; carve with MG. */
+function spawnArcadeMgBarrage(p) {
+  if (arcadeCadenceBlocked(p)) return false;
+  const layout = arcadeFormLayoutFoe();
+  const hw = layout.hw;
+  const step = theme === "future" ? 78 : 54;
+  const edge = hw + 8;
+  const lo = edge;
+  const hi = W - edge;
+  if (hi - lo < step) return false;
+  let cols = Math.floor((hi - lo) / step) + 1;
+  cols = Math.max(4, Math.min(theme === "future" ? 6 : 7, cols));
+  const span = hi - lo;
+  const xs = [];
+  for (let i = 0; i < cols; i++) {
+    const t = cols === 1 ? 0.5 : i / (cols - 1);
+    xs.push(lo + span * t);
+  }
+  // Ensure at least one ~52–64px seam (nudge one mid column) so hope = shoot a path.
+  if (xs.length >= 3) {
+    const mid = (xs.length / 2) | 0;
+    const seam = 28 + Math.random() * 8;
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    xs[mid] = Math.max(lo, Math.min(hi, xs[mid] + sign * seam));
+    xs.sort((a, b) => a - b);
+  }
+  const before = obstacles.length;
+  let landed = 0;
+  const rows = 2;
+  for (let r = 0; r < rows; r++) {
+    for (let i = 0; i < xs.length; i++) {
+      // Stagger: alternate columns trail on row 0; row 1 always trails deeper.
+      let lift = arcadeFormStaggerLift(r === 0 ? (i % 2) : (2 + (i % 2)));
+      // Skip ~1 in 7 slots so the sheet is dense but not a solid brick wall.
+      if (Math.random() < 0.14) continue;
+      const foe = arcadeFormFoe();
+      const xJ = xs[i] + (Math.random() - 0.5) * 10;
+      if (dropBody(p, xJ, p.spawnY - lift, -1000, -1000, foe.kind, foe.size)) {
+        const o = obstacles[obstacles.length - 1];
+        const cHw = bodyHw(o.kind, o.s);
+        o.x = Math.max(cHw + 8, Math.min(W - cHw - 8, o.x));
+        landed++;
+      }
+    }
+  }
+  if (landed < 3) {
+    obstacles.length = before;
+    return false;
+  }
+  stampArcadeMgSolos(before);
+  lastGapW = 56;
+  lastHole = 0.5;
+  return true;
+}
+/** MG barrage solos: readable ahead + X-homing. Laser keeps stampArcadeDivers. */
+function stampArcadeMgSolos(fromIdx) {
+  const n = obstacles.length - fromIdx;
+  if (n <= 0) return;
+  let marked = 0;
+  const capVy = pace().planeVy * 0.95; // solos stay under pre-slow Classic speed
+  for (let i = 0; i < n; i++) {
+    if (i % 4 !== 0) continue;
+    const o = obstacles[fromIdx + i];
+    o.arcadeDiver = true;
+    o.arcadeSolo = true;
+    o.vy = Math.min(capVy, o.vy * ARCADE_MG_SOLO_VY);
+    marked++;
+  }
+  if (n >= 3 && marked < 1) {
+    const o = obstacles[fromIdx];
+    o.arcadeDiver = true;
+    o.arcadeSolo = true;
+    o.vy = Math.min(capVy, o.vy * ARCADE_MG_SOLO_VY);
   }
 }
 function stampArcadeDivers(fromIdx) {
@@ -4813,6 +4925,12 @@ function loop(now) {
       && arcadeActive
       && (arcadeActive.id === "mg" || arcadeActive.id === "laser")
       && !window.__arcadeCaptureScrub;
+    if (arcadeMgBreakUntil && performance.now() >= arcadeMgBreakUntil) {
+      for (const o of obstacles) {
+        if (o.arcadeMgPeel) { o.vx = 0; o.arcadeMgPeel = false; }
+      }
+      arcadeMgBreakUntil = 0;
+    }
     for (const o of obstacles) {
       o.y += o.vy * (dt / 16);
       if (o.vx) {
