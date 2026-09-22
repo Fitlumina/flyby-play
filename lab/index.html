@@ -165,6 +165,12 @@ let arcadeFormTunnelDir = 1;
 let arcadeFormGhostSide = 0;   // -1 left lip, +1 right lip
 let arcadeSpareArmed = false;
 let arcadePerkSpawn = 0;
+// After a pickup window: one perk, play it out, then much later next.
+// Timed MG/laser=15s, ghost=12s. Gap must exceed that + absorb + breathing room.
+const ARCADE_PERK_GAP_MIN_MS = 16000; // was effectively ~2800
+const ARCADE_PERK_GAP_JITTER_MS = 10000; // +0..10s → 16–26s between spawn attempts when path clear
+const ARCADE_PERK_END_GRACE_MS = 1400; // brief; not empty/boring (~1.2–1.6s band)
+let arcadePerkEndGraceUntil = 0; // performance.now() deadline; 0 = inactive
 let arcadeBullets = [];
 let arcadeFireAt = 0;
 let arcadeSparks = [];
@@ -190,6 +196,7 @@ function resetArcadeRunState() {
   arcadeFormGhostSide = 0;
   arcadeSpareArmed = false;
   arcadePerkSpawn = isArcade() ? 900 : 0; // delay before first single orb
+  arcadePerkEndGraceUntil = 0;
   arcadeOrbPop = null;
   arcadeBullets = [];
   arcadeFireAt = 0;
@@ -283,11 +290,11 @@ function tickArcadePerks(dt, score) {
   if (!isArcade()) return;
   // Capture scrub (?demoPickup&t=): keep seeded orb/pop/active frozen for still/GIF frames
   if (window.__arcadeCaptureScrub) return;
-  // spaced through the run: only advance spawn clock when path is clear
-  if (arcadePickups.length === 0) {
+  // Clock advances only when the path is clear and no timed perk is playing out.
+  if (arcadePickups.length === 0 && !arcadeActive) {
     arcadePerkSpawn += dt;
-    // ~2.8–5.2s between singles (far apart; not clumps)
-    if (arcadePerkSpawn > 2800 + Math.random() * 2400) {
+    // 16–26s between singles once the path is clear (play it out, then much later).
+    if (arcadePerkSpawn > ARCADE_PERK_GAP_MIN_MS + Math.random() * ARCADE_PERK_GAP_JITTER_MS) {
       arcadePerkSpawn = 0;
       maybeSpawnArcadePerk(score);
     }
@@ -311,7 +318,15 @@ function tickArcadePerks(dt, score) {
     arcadeFormTunnelX = 0;
     arcadeFormTunnelDir = 1;
     arcadeFormGhostSide = 0;
-    window.__arcadeFormJustExpired = true;
+    // Realign to Classic lane (keep X; snap Y)
+    bird.y = H * 0.72;
+    if (!arcadeTimedPerkActive()) arcadeGrabOffY = null;
+    // Brief clear window
+    obstacles = [];           // wipe on-screen foes so player isn't mid-formation
+    arcadeBullets = [];       // leftover MG bolts
+    spawn = 0;                // restart spawn clock cleanly
+    arcadePerkEndGraceUntil = performance.now() + ARCADE_PERK_END_GRACE_MS;
+    window.__arcadeFormJustExpired = false; // superseded by grace timer
   }
   if (arcadeOrbPop && performance.now() - arcadeOrbPop.t0 > ARCADE_ABSORB_MS) arcadeOrbPop = null;
 }
@@ -1298,6 +1313,7 @@ function reset() {
   futureGapPhase = "weave";
   futureGapPhaseLeft = 3 + Math.floor(Math.random() * 4);
   resetArcadeRunState();
+  clearClassicGrab();
 }
 
 let taxiDx = 0;
@@ -1330,25 +1346,51 @@ function setX(clientX) {
 /** Arcade stick-style grab: offset from bird at pointerdown. Null = no grab. */
 let arcadeGrabOffX = null;
 let arcadeGrabOffY = null;
+/** Spare-only is not timed — X-only on the Classic flight line. */
+function arcadeTimedPerkActive() {
+  return !!(arcadeActive && performance.now() < arcadeActive.until);
+}
 function beginArcadeGrab(touchX, touchY) {
+  // NO-ZIP: offset from current bird so first move continues from here
   arcadeGrabOffX = touchX - bird.x;
-  arcadeGrabOffY = touchY - bird.y;
+  arcadeGrabOffY = arcadeTimedPerkActive() ? (touchY - bird.y) : null;
 }
 function applyArcadeDrag(touchX, touchY) {
-  if (arcadeGrabOffX == null || arcadeGrabOffY == null) {
+  if (arcadeGrabOffX == null) {
     beginArcadeGrab(touchX, touchY);
     return;
   }
   const nx = Math.max(40, Math.min(W - 40, touchX - arcadeGrabOffX));
-  const ny = Math.max(40, Math.min(H - 40, touchY - arcadeGrabOffY));
   noteTaxiDx(nx);
   bird.x = nx;
-  bird.y = ny;
+  if (arcadeTimedPerkActive()) {
+    // free 2D stick while MG/laser/ghost active
+    if (arcadeGrabOffY == null) arcadeGrabOffY = touchY - bird.y;
+    const ny = Math.max(40, Math.min(H - 40, touchY - arcadeGrabOffY));
+    bird.y = ny;
+  } else {
+    // Arcade default track: Classic flight line only
+    bird.y = H * 0.72;
+    arcadeGrabOffY = null; // ignore Y grab
+  }
 }
 function clearArcadeGrab() {
   arcadeGrabOffX = null;
   arcadeGrabOffY = null;
 }
+/** Classic side-to-side grab. Separate from Arcade so a mode switch cannot reuse a stale offset. */
+let classicGrabOffX = null;
+function beginClassicGrab(touchX) {
+  classicGrabOffX = touchX - bird.x; // no-zip
+}
+function applyClassicDrag(touchX) {
+  if (classicGrabOffX == null) beginClassicGrab(touchX);
+  const nx = Math.max(40, Math.min(W - 40, touchX - classicGrabOffX));
+  noteTaxiDx(nx);
+  bird.x = nx;
+  // bird.y untouched (Classic always H*0.72 via reset/loop)
+}
+function clearClassicGrab() { classicGrabOffX = null; }
 
 function localPoint(e) {
   const rect = canvas.getBoundingClientRect();
@@ -1599,6 +1641,7 @@ function toMenu() {
   alive = true;
   pointer = false;
   clearArcadeGrab();
+  clearClassicGrab();
   obstacles = [];
   panel = "menu";
 }
@@ -2136,7 +2179,7 @@ canvas.addEventListener("pointerdown", e => {
     beginArcadeGrab(x, y);
     noteTaxiDx(bird.x);
   } else {
-    setX(e.clientX);
+    beginClassicGrab(x);
   }
 });
 canvas.addEventListener("pointermove", e => {
@@ -2145,7 +2188,8 @@ canvas.addEventListener("pointermove", e => {
       const [tx, ty] = localPoint(e);
       applyArcadeDrag(tx, ty);
     } else {
-      setX(e.clientX);
+      const [tx] = localPoint(e);
+      applyClassicDrag(tx);
     }
   }
   else if (pointer && !started && panel === "ranks" && ranksPointerLastY != null) {
@@ -2155,8 +2199,8 @@ canvas.addEventListener("pointermove", e => {
     clampRanksScroll();
   }
 });
-canvas.addEventListener("pointerup", () => { pointer = false; taxiLastX = null; ranksPointerLastY = null; clearArcadeGrab(); });
-canvas.addEventListener("pointercancel", () => { pointer = false; taxiLastX = null; ranksPointerLastY = null; clearArcadeGrab(); });
+canvas.addEventListener("pointerup", () => { pointer = false; taxiLastX = null; ranksPointerLastY = null; clearArcadeGrab(); clearClassicGrab(); });
+canvas.addEventListener("pointercancel", () => { pointer = false; taxiLastX = null; ranksPointerLastY = null; clearArcadeGrab(); clearClassicGrab(); });
 canvas.addEventListener("wheel", e => {
   if (started || panel !== "ranks") return;
   e.preventDefault();
@@ -3805,11 +3849,8 @@ function spawnArcadeGhostCross(p, opts) {
   return true;
 }
 function spawnObs() {
-  // Perk just ended: skip this spawn so the next row is not a formation wall.
-  if (typeof window !== "undefined" && window.__arcadeFormJustExpired) {
-    window.__arcadeFormJustExpired = false;
-    return false;
-  }
+  // Perk-end grace: brief empty window so the player can realign, then pressure resumes.
+  if (arcadePerkEndGraceUntil && performance.now() < arcadePerkEndGraceUntil) return false;
   const form = arcadeFormationId();
   if (form) return spawnArcadeFormation(form);
   const p = pace();
@@ -4725,8 +4766,10 @@ function loop(now) {
     if (bird.flap > 90) { bird.flap = 0; bird.frame = (bird.frame + 1) % 4; }
     spawn += dt;
     const freezeSpawn = window.__arcadePreview || (window.__arcadeLiveCapture && !window.__arcadeDemoFormation && !window.__arcadeRealPaceCapture);
+    const perkEndGrace = arcadePerkEndGraceUntil && performance.now() < arcadePerkEndGraceUntil;
+    if (arcadePerkEndGraceUntil && !perkEndGrace) arcadePerkEndGraceUntil = 0;
     const everyNow = pace().every;
-    if (!freezeSpawn && spawn > everyNow) {
+    if (!freezeSpawn && !perkEndGrace && spawn > everyNow) {
       if (spawnObs()) spawn = 0;
     }
     const score = Math.floor(dist);
