@@ -962,10 +962,23 @@ function tickArcadeCombat(dt) {
     if (s.life <= 0) arcadeSparks.splice(i, 1);
   }
 }
+let arcadeNeonOn = false;
+try { arcadeNeonOn = localStorage.getItem("flyby-arcade-neon") === "1"; } catch (err) {}
+function setArcadeNeonOn(on) {
+  arcadeNeonOn = !!on;
+  try { localStorage.setItem("flyby-arcade-neon", arcadeNeonOn ? "1" : "0"); } catch (err) {}
+}
+function canUseArcadeNeon() {
+  return owns("night") || owns("space") || owns("future");
+}
 function arcadeFireStyle() {
-  if (character === "bird" && theme === "sky") return "sketch-sky";
-  if (character === "bird" && theme === "night") return "sketch-night";
-  return "neon"; // Space/Future/UFO/Fly Taxi / any non-bird
+  if (character === "bird" && theme === "sky") return "sketch-sky"; // never neon on Sky
+  if (character === "bird" && theme === "night") {
+    if (canUseArcadeNeon() && arcadeNeonOn) return "neon";
+    return "sketch-night";
+  }
+  // Space/Future bird and UFO/Fly Taxi stay neon. Toggle only swaps Night bird sketch→neon.
+  return "neon";
 }
 // SPRITE_SWAP_HOOK — Vibe A Neon Glow MG (mg-bullet-vibe-a). Tip +X; rotate −90° so tip leads −Y.
 function drawArcadeMgBullet(b) {
@@ -1917,7 +1930,13 @@ function noteDeath() {
   countedThisDeath = true;
   const run = Math.floor(dist);
   const localBest = localBestScore();
-  flybyCall("submitScore", { score: run, best: localBest });
+  flybyCall("submitScore", {
+    score: run,
+    best: localBest,
+    theme: theme,
+    difficulty: gameMode,
+    gameMode: gameMode
+  });
 }
 function takeFreeContinue() {
   if (owns("adfree")) { reset(); return; }
@@ -2300,6 +2319,7 @@ function drawRowIcon(id, r) {
 function leavePanel() {
   if (panel === "store-theme" || panel === "store-characters" || panel === "store-bundles" || panel === "soon") panel = "store";
   else if (panel === "ranks") panel = ranksReturn === "options" ? "options" : "menu";
+  else if (panel === "fire-style") panel = "menu";
   else panel = "menu";
 }
 canvas.addEventListener("pointerdown", e => {
@@ -2309,14 +2329,21 @@ canvas.addEventListener("pointerdown", e => {
   if (!started) {
     if (panel === "menu") {
       if (inStart(x, y)) {
-        reset();
-        setX(e.clientX);
-        if (isArcade()) beginArcadeGrab(x, y);
+        // Picker only on a fresh menu Start. Die → Again calls reset() and skips this.
+        if (canUseArcadeNeon() && character === "bird") {
+          panel = "fire-style";
+          return;
+        }
+        beginFreshRun(e);
         return;
       }
       if (hitBox(ranksCornerBox(), x, y)) { openRanks("menu"); return; }
       if (hitBox(menuBtn(0), x, y)) { optionOpen = ""; panel = "options"; return; }
       if (hitBox(menuBtn(1), x, y)) { panel = "store"; return; }
+    } else if (panel === "fire-style") {
+      if (hitBox(backBox(), x, y)) { leavePanel(); return; }
+      if (hitBox(fireStyleChoiceBox(0), x, y)) { beginFromFireStyle(false, e); return; }
+      if (hitBox(fireStyleChoiceBox(1), x, y)) { beginFromFireStyle(true, e); return; }
     } else if (panel === "options" || panel === "store" || panel === "store-theme" || panel === "store-characters" || panel === "store-bundles" || panel === "soon" || panel === "ranks") {
       if (hitBox(backBox(), x, y)) { leavePanel(); return; }
       if (panel === "ranks") {
@@ -4328,6 +4355,55 @@ function hit(o) {
 function wobble(x, y, seed) {
   return [x + Math.sin(seed) * 1.4, y + Math.cos(seed * 1.3) * 1.2];
 }
+function fireStyleChoiceBox(index) {
+  const w = Math.min(220, W - 64);
+  const h = 54;
+  return { x: W / 2 - w / 2, y: H * 0.40 + index * 70, w: w, h: h };
+}
+function beginFreshRun(e) {
+  reset();
+  setX(e.clientX);
+  const pt = localPoint(e);
+  if (isArcade()) beginArcadeGrab(pt[0], pt[1]);
+}
+function beginFromFireStyle(neon, e) {
+  setArcadeNeonOn(!!neon);
+  beginFreshRun(e);
+}
+function drawFireStyle() {
+  ctx.fillStyle = panelBg();
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = ink();
+  ctx.strokeStyle = ink();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = "700 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("Fire style", W / 2, 78);
+  drawBack();
+  const choices = [
+    { label: "Sketch", on: !arcadeNeonOn },
+    { label: "Neon", on: !!arcadeNeonOn }
+  ];
+  for (let i = 0; i < choices.length; i++) {
+    const choice = choices[i];
+    const b = fireStyleChoiceBox(i);
+    ctx.strokeStyle = ink();
+    ctx.fillStyle = ink();
+    ctx.lineWidth = choice.on ? 3.4 : 1.8;
+    sketchRound(b.x, b.y, b.w, b.h);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "600 20px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(choice.label, b.x + b.w / 2, b.y + b.h / 2);
+    if (choice.on) {
+      ctx.textAlign = "right";
+      ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("on", b.x + b.w - 14, b.y + b.h / 2);
+    }
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+}
 function sketchRound(x, y, w, h) {
   ctx.beginPath();
   ctx.moveTo(x + 10, y);
@@ -4695,10 +4771,23 @@ function ranksSignInBox() {
   const h = 46;
   return { x: W / 2 - w / 2, y: H - 78, w, h };
 }
+function ranksPieceLabel(raw, table) {
+  if (raw == null || raw === "") return "—";
+  const id = String(raw).trim().toLowerCase();
+  return table[id] || "—";
+}
+function ranksMetaLabel(row) {
+  const themeLabel = ranksPieceLabel(row && row.theme, {
+    sky: "Sky", night: "Night", space: "Space", future: "Future"
+  });
+  const modeRaw = row ? (row.difficulty != null ? row.difficulty : row.gameMode) : null;
+  const modeLabel = ranksPieceLabel(modeRaw, { classic: "Classic", arcade: "Arcade" });
+  return themeLabel + " · " + modeLabel;
+}
 function ranksListMetrics() {
   const top = 156;
   const bottom = H - 96;
-  const rowH = 32;
+  const rowH = 48;
   const rows = lbState.entries;
   const viewH = Math.max(0, bottom - top);
   const contentH = rows.length * rowH;
@@ -4741,13 +4830,17 @@ function drawRanks() {
       if (y + rowH < top || y > bottom) return;
       const mine = !!row.isLocal;
       ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
       ctx.font = (mine ? "700 " : "600 ") + "15px ui-sans-serif, system-ui, sans-serif";
       ctx.fillStyle = ink();
-      ctx.fillText(String(row.rank || i + 1), 28, y + 22);
+      ctx.fillText(String(row.rank || i + 1), 28, y + 20);
       const name = String(row.name || "player").slice(0, 18);
-      ctx.fillText(name, 58, y + 22);
+      ctx.fillText(name, 58, y + 20);
       ctx.textAlign = "right";
-      ctx.fillText(String(row.score || 0), W - 28, y + 22);
+      ctx.fillText(String(row.score || 0), W - 28, y + 20);
+      ctx.textAlign = "left";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(ranksMetaLabel(row), 58, y + 38);
     });
     ctx.restore();
     ctx.textAlign = "center";
@@ -5220,6 +5313,7 @@ function loop(now) {
     else if (panel === "store-bundles") drawStoreBundles();
     else if (panel === "soon") drawSoon();
     else if (panel === "ranks") drawRanks();
+    else if (panel === "fire-style") drawFireStyle();
     else drawMenu();
   }
 
