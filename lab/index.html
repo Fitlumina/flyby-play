@@ -166,7 +166,7 @@ let arcadeFormGhostSide = 0;   // -1 left lip, +1 right lip
 // MG absorb break → barrage (PR #68). Peel window then dense full-track waves.
 const ARCADE_MG_BREAK_MS = 1100;
 const ARCADE_MG_PEEL_VX = 10;
-const ARCADE_MG_SPEED_SCALE = 0.70;
+const ARCADE_MG_SPEED_SCALE = 0.63;
 const ARCADE_MG_SOLO_VY = 1.10;
 let arcadeMgBreakUntil = 0; // performance.now() deadline; 0 = inactive
 let arcadeSpareArmed = false;
@@ -203,7 +203,7 @@ function resetArcadeRunState() {
   arcadeFormTunnelDir = 1;
   arcadeFormGhostSide = 0;
   arcadeMgBreakUntil = 0;
-  arcadeLaserLean = 0;
+  arcadeLaserClearWhip();
   arcadeSpareArmed = false;
   arcadeSpareIFrameUntil = 0;
   arcadeLastPerkId = "";
@@ -254,6 +254,7 @@ function applyArcadePickup(p) {
     until: performance.now() + p.duration * 1000 + ARCADE_ABSORB_MS
   };
   arcadeFormArm(p.id, { force: true });
+  arcadeLaserClearWhip();
   if (p.id === "mg") arcadeMgTriggerBreak();
   if (p.id === "invincible") {
     // Ghost is Classic X-only — drop any MG/laser free-Y immediately
@@ -389,6 +390,7 @@ function tickArcadePerks(dt, score) {
     } else if (endingId === "laser") {
       // Laser stick exit: brief clear window (MG-only peel brief)
       arcadeMgBreakUntil = 0;
+      arcadeLaserClearWhip();
       obstacles = [];
       arcadeBullets = [];
       spawn = 0;
@@ -738,43 +740,113 @@ function arcadeCombatNose() {
   const forward = (character === "bird") ? 0.20 : 0.36;
   return { x: bird.x, y: bird.y - tgt.drawS * forward };
 }
-/** Laser beam lean from drag (taxiDx). Neg=left, pos=right. Smoothed so whip reads, not jitters. */
-let arcadeLaserLean = 0;
-function arcadeLaserLeanTarget() {
-  const max = 0.78; // ~45° — clear adjacent lane columns, not only dead-ahead
-  const t = Math.max(-1, Math.min(1, taxiDx / 7.5));
-  return t * max;
+/** Laser rope whip — tip lags nose X; curve shared by draw + hit (not stiff rod). */
+const ARCADE_LASER_AIM_DX = 6.5;
+const ARCADE_LASER_AIM_BLEND = 0.45;
+const ARCADE_LASER_AIM_DECAY = 0.93;
+const ARCADE_LASER_AIM_DEAD = 0.45;
+const ARCADE_LASER_TIP_MAX_RAD = 0.70;
+const ARCADE_LASER_TIP_STIFF = 0.035;
+const ARCADE_LASER_TIP_DAMP = 0.72;
+const ARCADE_LASER_SAMPLES = 12;
+const ARCADE_LASER_HALF_W = 7;
+const ARCADE_LASER_DRAW_W = 14;
+const ARCADE_LASER_TIP_MARGIN = 18;
+let arcadeLaserAim = 0;
+let arcadeLaserPrevNoseX = 0;
+let arcadeLaserTipX = 0;
+let arcadeLaserTipV = 0;
+let arcadeLaserWhipLive = false;
+function arcadeLaserClearWhip() {
+  arcadeLaserAim = 0;
+  arcadeLaserPrevNoseX = 0;
+  arcadeLaserTipX = 0;
+  arcadeLaserTipV = 0;
+  arcadeLaserWhipLive = false;
 }
-/** Advance lean once per combat/draw beat — geom reads snapshot (no double-step). */
-function arcadeLaserTickLean() {
-  const tgt = arcadeLaserLeanTarget();
-  arcadeLaserLean = arcadeLaserLean * 0.72 + tgt * 0.28;
-  if (Math.abs(arcadeLaserLean) < 0.012 && Math.abs(tgt) < 0.02) arcadeLaserLean = 0;
-  return arcadeLaserLean;
+/** Integrate whip once per combat frame; geom/draw read the snapshot. */
+function arcadeLaserTickWhip(dt) {
+  const nose = arcadeCombatNose();
+  const len = Math.max(8, nose.y + 24);
+  const k = Math.max(0, Math.min(2, dt / 16));
+  if (!arcadeLaserWhipLive) {
+    arcadeLaserTipX = nose.x;
+    arcadeLaserTipV = 0;
+    arcadeLaserAim = 0;
+    arcadeLaserPrevNoseX = nose.x;
+    arcadeLaserWhipLive = true;
+  }
+  const dx = nose.x - arcadeLaserPrevNoseX;
+  arcadeLaserPrevNoseX = nose.x;
+  if (Math.abs(dx) >= ARCADE_LASER_AIM_DEAD) {
+    const sample = Math.max(-1, Math.min(1, dx / ARCADE_LASER_AIM_DX));
+    arcadeLaserAim += (sample - arcadeLaserAim) * ARCADE_LASER_AIM_BLEND * k;
+  } else {
+    arcadeLaserAim *= Math.pow(ARCADE_LASER_AIM_DECAY, k);
+    if (Math.abs(arcadeLaserAim) < 0.02) arcadeLaserAim = 0;
+  }
+  const maxOff = Math.sin(ARCADE_LASER_TIP_MAX_RAD) * len;
+  const m = ARCADE_LASER_TIP_MARGIN;
+  let targetX = Math.max(m, Math.min(W - m, nose.x + arcadeLaserAim * maxOff));
+  arcadeLaserTipV += (targetX - arcadeLaserTipX) * ARCADE_LASER_TIP_STIFF * k;
+  arcadeLaserTipV *= Math.pow(ARCADE_LASER_TIP_DAMP, k);
+  arcadeLaserTipX += arcadeLaserTipV * k;
+  if (arcadeLaserTipX < m) {
+    arcadeLaserTipX = m;
+    if (arcadeLaserTipV < 0) arcadeLaserTipV = 0;
+  } else if (arcadeLaserTipX > W - m) {
+    arcadeLaserTipX = W - m;
+    if (arcadeLaserTipV > 0) arcadeLaserTipV = 0;
+  }
+  if (arcadeLaserAim === 0 && Math.abs(arcadeLaserTipX - nose.x) < 1.5 && Math.abs(arcadeLaserTipV) < 0.35) {
+    arcadeLaserTipX = nose.x;
+    arcadeLaserTipV = 0;
+  }
 }
-/** Shared laser segment (nose → tip) for draw + hit. Uses current arcadeLaserLean. */
+/** Shared curved beam (nose → tip quadratic) for draw + hit. Read-only. */
 function arcadeLaserBeamGeom() {
   const nose = arcadeCombatNose();
-  const lean = arcadeLaserLean;
   const len = Math.max(8, nose.y + 24);
-  const dx = Math.sin(lean);
-  const dy = -Math.cos(lean);
-  return { nose, lean, len, dx, dy, halfW: 7 };
+  const tip = { x: arcadeLaserTipX, y: nose.y - len };
+  const mid = {
+    x: nose.x + (tip.x - nose.x) * 0.22,
+    y: nose.y + (tip.y - nose.y) * 0.58
+  };
+  const pts = [];
+  const S = ARCADE_LASER_SAMPLES;
+  for (let i = 0; i <= S; i++) {
+    const t = i / S;
+    const u = 1 - t;
+    pts.push({
+      x: u * u * nose.x + 2 * u * t * mid.x + t * t * tip.x,
+      y: u * u * nose.y + 2 * u * t * mid.y + t * t * tip.y
+    });
+  }
+  return { nose, tip, mid, len, pts, halfW: ARCADE_LASER_HALF_W };
+}
+function arcadeLaserSegHits(c, r, ax, ay, bx, by) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const apx = c.x - ax;
+  const apy = c.y - ay;
+  const ab2 = abx * abx + aby * aby;
+  let t = ab2 > 1e-6 ? (apx * abx + apy * aby) / ab2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const px = ax + abx * t;
+  const py = ay + aby * t;
+  const ddx = c.x - px;
+  const ddy = c.y - py;
+  return ddx * ddx + ddy * ddy <= r * r;
 }
 function arcadeLaserBeamHitsFoe(o) {
   const g = arcadeLaserBeamGeom();
   const c = arcadeFoeCenter(o);
-  const fx = c.x - g.nose.x;
-  const fy = c.y - g.nose.y;
-  const proj = fx * g.dx + fy * g.dy;
-  if (proj < -20 || proj > g.len) return false;
-  const t = Math.max(0, Math.min(g.len, proj));
-  const px = g.nose.x + g.dx * t;
-  const py = g.nose.y + g.dy * t;
   const r = foeHitR(o) + g.halfW;
-  const ddx = c.x - px;
-  const ddy = c.y - py;
-  return ddx * ddx + ddy * ddy <= r * r;
+  const pts = g.pts;
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (arcadeLaserSegHits(c, r, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y)) return true;
+  }
+  return false;
 }
 function arcadeFoeCenter(o) {
   if (o.kind === "flyingcar") return { x: o.x, y: o.y + (o.s || 76) * 0.10 };
@@ -867,7 +939,7 @@ function tickArcadeCombat(dt) {
     }
   }
   if (arcadeCombatCanFire() && arcadeActive.id === "laser") {
-    arcadeLaserTickLean();
+    arcadeLaserTickWhip(dt);
     for (let j = obstacles.length - 1; j >= 0; j--) {
       const o = obstacles[j];
       if (!arcadeLaserBeamHitsFoe(o)) continue;
@@ -932,39 +1004,56 @@ function drawArcadeMgBullet(b) {
   }
   ctx.restore();
 }
-// SPRITE_SWAP_HOOK — Vibe A Neon Glow laser (laser-bolt-vibe-a), cyan. Tip +X; rotate −90° so tip leads −Y.
+// SPRITE_SWAP_HOOK — Vibe A Neon Glow laser (laser-bolt-vibe-a), cyan. Tip +X along each rope segment.
 function drawArcadeLaserBeam() {
   const style = arcadeFireStyle();
   const sketch = style === "sketch-sky" || style === "sketch-night";
   const img = style === "sketch-night" ? arcadeLaserBoltSketchNightImg
     : (style === "sketch-sky" ? arcadeLaserBoltSketchImg : arcadeLaserBoltImg);
-  // Lean already advanced in combat tick this frame; snapshot for draw match
+  // Whip already advanced in combat tick this frame; geom snapshot for draw match
   const g = arcadeLaserBeamGeom();
-  const len = g.len;
-  const w = 14;
-  ctx.save();
-  ctx.translate(g.nose.x, g.nose.y);
-  // Tip +X then −90° = up; +lean whips with drag (left/right)
-  ctx.rotate(-Math.PI / 2 + g.lean);
-  ctx.globalCompositeOperation = "source-over";
+  const pts = g.pts;
+  const w = ARCADE_LASER_DRAW_W;
   const pulse = 0.55 + 0.45 * arcadePulse01(performance.now());
-  ctx.globalAlpha = pulse;
-  ctx.fillStyle = sketch
+  const halo = sketch
     ? (style === "sketch-night" ? "rgba(230,211,176,0.30)" : "rgba(32,28,24,0.14)")
     : "rgba(64,224,255,0.22)";
+  const core = sketch
+    ? (style === "sketch-night" ? "rgba(230,211,176,0.95)" : "rgba(32,28,24,0.90)")
+    : "rgba(64,224,255,0.95)";
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = pulse;
+  ctx.strokeStyle = halo;
+  ctx.lineWidth = w * 1.8;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
   ctx.beginPath();
-  ctx.roundRect(0, -w * 0.9, len, w * 1.8, w * 0.9);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(0, -w / 2, len, w, w / 2);
-  ctx.clip();
-  if (img && img.complete && img.naturalWidth) {
-    ctx.drawImage(img, 0, -w / 2, len, w);
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+  const hasImg = img && img.complete && img.naturalWidth;
+  if (hasImg) {
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const segLen = Math.sqrt(dx * dx + dy * dy);
+      if (segLen < 0.5) continue;
+      ctx.save();
+      ctx.translate(a.x, a.y);
+      ctx.rotate(Math.atan2(dy, dx));
+      ctx.drawImage(img, 0, -w / 2, segLen + 2, w);
+      ctx.restore();
+    }
   } else {
-    ctx.fillStyle = sketch
-      ? (style === "sketch-night" ? "rgba(230,211,176,0.95)" : "rgba(32,28,24,0.90)")
-      : "rgba(64,224,255,0.95)";
-    ctx.fillRect(0, -w * 0.22, len, w * 0.44);
+    ctx.strokeStyle = core;
+    ctx.lineWidth = w * 0.44;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -3125,7 +3214,7 @@ function arcadeFormPace(p) {
   if (arcadeFormationId() !== "mg") return p;
   return Object.assign({}, p, {
     planeVy: p.planeVy * ARCADE_MG_SPEED_SCALE,
-    every: Math.max(p.every, Math.round(p.every * 1.28)),
+    every: Math.max(p.every, Math.round(p.every * 1.36)),
     follow: p.follow >= 900 ? p.follow : Math.max(150, Math.round(p.follow * 0.9))
   });
 }
