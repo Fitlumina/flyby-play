@@ -119,7 +119,22 @@ let farStars = [];
 let nearStars = [];
 let spawn = 0;
 let dist = 0;
+// Sky clouds only. Night/Space/Future keep shared skyScroll.
+// params.json cloudScrollAlive
+const CLOUD_SCROLL_ALIVE = 1.15;
+// params.json halfFactor — multiply CURRENT cloud scroll, never planeVy
+const CLOUD_HALF_FACTOR = 0.5;
+// params.json proposedCloudPxPerFrame === 1.15 * 0.5
+const CLOUD_SCROLL_PX = CLOUD_SCROLL_ALIVE * CLOUD_HALF_FACTOR; // 0.575
+// Idle today is 0.35. Half keeps the idle/alive ratio (~0.304). Not in params.json.
+const CLOUD_SCROLL_IDLE = 0.35 * CLOUD_HALF_FACTOR; // 0.175
+// params.json shimmerBase / shimmerAmp / shimmerHz
+const SHIMMER_BASE = 0.82;
+const SHIMMER_AMP = 0.12;
+const SHIMMER_HZ = 0.85;
+
 let skyScroll = 0;
+let cloudScroll = 0;
 let alive = true;
 let started = false;
 let best = Number(localStorage.getItem("flyby-best") || 0);
@@ -2480,10 +2495,13 @@ function drawSky() {
   else if (theme === "future") drawFuture();
   else if (theme === "night") drawNight();
   else {
-    skyScroll += started && alive ? 1.15 : 0.35;
+    // Sky only. Night/Space/Future keep their own skyScroll increments.
+    cloudScroll += started && alive ? CLOUD_SCROLL_PX : CLOUD_SCROLL_IDLE;
+    const tSec = performance.now() / 1000;
+    const cloudAlpha = SHIMMER_BASE + SHIMMER_AMP * Math.sin(tSec * Math.PI * 2 * SHIMMER_HZ);
     for (const c of clouds) {
-      let y = (c.y + skyScroll) % (H + 160) - 80;
-      drawCloud(c.x, y, c.s);
+      const y = (c.y + cloudScroll) % (H + 160) - 80;
+      drawCloud(c.x, y, c.s, cloudAlpha);
     }
   }
   applyViewMode();
@@ -2939,10 +2957,11 @@ function tintSprite(img, dx, dy, s) {
   ctx.drawImage(c, dx, dy);
 }
 
-function drawCloud(x, y, s) {
+function drawCloud(x, y, s, alpha) {
+  const a = alpha == null ? 0.9 : alpha;
   ctx.save();
   ctx.translate(x, y);
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillStyle = "rgba(255,255,255," + a + ")";
   ctx.strokeStyle = "#2a2a2a";
   ctx.lineWidth = 2.2;
   ctx.lineJoin = "round";
