@@ -3341,9 +3341,11 @@ function pickClassicWeaveGap(gapW, away, p) {
   }
   return best;
 }
+// Carlos ON bbox h 250 vs original transparent 197; 0.851 = (197/250)*1.08 (~1.08× old visual height).
+const FLYING_CAR_DRAW_SCALE = 0.851;
 function drawSize(kind, size) {
   if (kind === "airplane") return size + 16;
-  if (kind === "flyingcar") return size + 36;
+  if (kind === "flyingcar") return Math.round((size + 36) * FLYING_CAR_DRAW_SCALE);
   return size;
 }
 function bodyHw(kind, drawnS) {
@@ -3683,8 +3685,8 @@ function arcadeFormFoe() {
 }
 function arcadeFutureLayoutFoe() {
   const size = 58;
-  const drawn = drawSize("flyingcar", size); // 94
-  return { kind: "flyingcar", size: size, drawn: drawn, hw: bodyHw("flyingcar", drawn) }; // hw 42.3
+  const drawn = drawSize("flyingcar", size); // ~80 at size 58
+  return { kind: "flyingcar", size: size, drawn: drawn, hw: bodyHw("flyingcar", drawn) }; // hw ~36 at drawn 80
 }
 function arcadeFormLayoutFoe() {
   if (theme === "future") return arcadeFutureLayoutFoe();
