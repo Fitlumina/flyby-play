@@ -3685,8 +3685,8 @@ function arcadeFormFoe() {
 }
 function arcadeFutureLayoutFoe() {
   const size = 58;
-  const drawn = drawSize("flyingcar", size); // ~80 at size 58
-  return { kind: "flyingcar", size: size, drawn: drawn, hw: bodyHw("flyingcar", drawn) }; // hw ~36 at drawn 80
+  const drawn = drawSize("flyingcar", size); // 80
+  return { kind: "flyingcar", size: size, drawn: drawn, hw: bodyHw("flyingcar", drawn) }; // hw 36
 }
 function arcadeFormLayoutFoe() {
   if (theme === "future") return arcadeFutureLayoutFoe();
